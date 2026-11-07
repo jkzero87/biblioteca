@@ -31,6 +31,14 @@ Card fields and their source in the log:
                        distinct bash command (each truncated to 300 chars),
                        INCLUDING retrieval commands. First-seen order.
                        Feeds the familiarity FTS table.
+  familiar_classes <- one class per familiar_terms entry, same order
+                       (fix pass 2): 'write'/'read' for file paths (written
+                       vs everything else), 'retrieval' for retrieval bash
+                       commands and for grep/glob tool-call path args
+                       (searching is not evidence), 'error'/'commit'/'write'/
+                       'read' for the other bash commands (the same salience
+                       classes as command_classes). Feeds the [searched]
+                       label in search.py.
   tool_call_count  <- count of `tool/call` events
   error_count      <- count of `tool/result` with data.message.isError == true
   commit_hashes    <- regex `[branch <sha>]` in non-error tool results
@@ -85,6 +93,9 @@ COMMIT_MARKERS = ("git commit", "git push")
 RETRIEVAL_PROGS = ("grep", "egrep", "rg")
 RETRIEVAL_SCRIPTS = ("src/search.py", "src/verify_match.py")
 FIND_NAME_FLAGS = ("-name", "-iname", "-path")
+# Tool calls that search the filesystem: their path args are retrieval
+# acts, like a shell grep (remembered, never evidence).
+SEARCH_TOOLS = ("grep", "glob")
 
 # Source monitoring (design.md 3.7): every stored field carries its origin.
 # Phase 2b has no model involvement, so nothing is tagged 'model'.
@@ -98,6 +109,7 @@ SOURCE_MAP = {
     "files_touched": "observed",
     "bash_commands": "observed",
     "familiar_terms": "observed",
+    "familiar_classes": "observed",
     "tool_call_count": "observed",
     "error_count": "observed",
     "n_writes": "observed",
@@ -215,6 +227,7 @@ def extract_card(path):
         "files_touched": [],
         "bash_commands": [],
         "familiar_terms": [],
+        "familiar_classes": [],
         "tool_call_count": 0,
         "error_count": 0,
         "commit_hashes": [],
@@ -222,6 +235,8 @@ def extract_card(path):
     written = OrderedDict()   # path -> first-seen order (write/edit calls)
     readonly = OrderedDict()  # path -> first-seen order (everything else)
     familiar = OrderedDict()  # lossless terms (paths + bash commands)
+    arg_cls = OrderedDict()   # path-like term -> class of the tool/call
+                               # that produced it (fix pass 2)
     bash_calls = []           # (full_command, callId) in chronological order
     call_errors = {}          # callId -> True if any result isError
     commits = OrderedDict()
@@ -268,6 +283,9 @@ def extract_card(path):
                 v = args.get(k)
                 if isinstance(v, str) and v and v not in familiar:
                     familiar[v] = None
+                    # grep/glob search the filesystem: their path arg is a
+                    # retrieval act (never evidence); other tools just read
+                    arg_cls[v] = "retrieval" if name in SEARCH_TOOLS else "read"
             if name == "bash":
                 cmd = args.get("command", "")
                 if isinstance(cmd, str):
@@ -354,7 +372,31 @@ def extract_card(path):
         CLASS_NAMES[salience_prio(bash_calls[i][0], bash_calls[i][1], call_errors)]
         for i in chosen
     ]
+    # fix pass 2: one class per familiar term (same order as familiar_terms):
+    # file paths take the file class (written vs everything else), bash
+    # commands take the command class ('retrieval' or the salience class),
+    # and path args of other tools take the class recorded at insertion.
+    cmd_by_term = {}
+    for full, cid in bash_calls:
+        t = full[:FAMILIAR_CMD_CHARS]
+        if t not in cmd_by_term:
+            cmd_by_term[t] = (full, cid)
+    familiar_classes = []
+    for term in familiar:
+        if term in written:
+            familiar_classes.append("write")
+        elif term in readonly:
+            familiar_classes.append("read")
+        elif term in cmd_by_term:
+            full, cid = cmd_by_term[term]
+            familiar_classes.append(
+                "retrieval" if is_retrieval(full)
+                else CLASS_NAMES[salience_prio(full, cid, call_errors)]
+            )
+        else:
+            familiar_classes.append(arg_cls.get(term, "read"))
     card["familiar_terms"] = list(familiar)
+    card["familiar_classes"] = familiar_classes
     card["commit_hashes"] = list(commits)
     card["n_writes"] = n_writes
     card["n_commits"] = len(commits)

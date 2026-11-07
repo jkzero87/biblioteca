@@ -49,3 +49,6 @@ Ranking uses salience of the matched items only (errors, commits, writes that co
 
 ## 2026-11-07 — Only real retrieval counts as use
 Search records access only with --touch (used by the Phase 4 server). Test runs never change ranking. Why: retrieval strengthens memory (testing effect), but test queries are not use; all accesses recorded before this date were tests and were reset.
+
+## 2026-11-07 — Familiarity keeps its source: [familiar] vs [searched]
+A familiarity hit that matches only through search commands is labelled [searched] and ranks last. Order: [card] > [familiar] > [searched]. Nothing is dropped. Why: after the previous fix, 4 of 5 compatibility.json hits were sessions that only searched for it, burying the one session that used the file.

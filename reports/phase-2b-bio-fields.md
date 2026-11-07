@@ -211,3 +211,91 @@ match of 6e168499 no longer sits on a card.
   rebuild; build_index carry-over verified (the rebuild started from a
   db that still carried the old access values).
 - n_retrieval total across 150 cards: 453 (35 cards with n_retrieval > 0).
+
+## Fix pass 2 (2026-11-07)
+
+A familiarity hit that matches only through search commands is now
+labelled [searched] and ranks last. Order: [card] > [familiar] >
+[searched]. Nothing is dropped (see docs/decisions.md, 2026-11-07).
+
+Implementation: extract.py stores familiar_classes, one class per
+familiar_terms entry, same order — 'write'/'read' for file paths
+(written vs everything else), 'retrieval' for retrieval bash commands
+and for grep/glob tool-call path args (searching is not evidence),
+'error'/'commit'/'write'/'read' for the other bash commands (the same
+salience classes). build_index.py adds a familiar_classes TEXT column.
+search.py attributes each hit's matched terms with an in-memory FTS5
+table (one row per term, phrase query per query word, same tokenizer as
+familiar_fts) and reads the classes from cards: all matched classes
+'retrieval' → [searched], else [familiar].
+
+Baseline: pre-change db sha 7d59207ac2f57ca8f91d05bd871d1c749573afa52646b0dac9d3f5c0e4bb1575
+(150 cards). Rebuilt db: 151 cards — the fix-pass session (044c7b02) is
+now included, only the current session is excluded — sha256
+86d65e4647ea3931003f69c88cb1ea4bbc75b4e289cdc8c992386acba2c625c1.
+Class aggregate over the 151 cards: read 959, write 244, retrieval 456,
+commit 11, error 2; familiar_classes aligned with familiar_terms on
+every card.
+
+Old = 0b0bf0e search.py, new = current; both runs on the same rebuilt
+db, no --touch.
+
+### standard-light
+
+| # | old (0b0bf0e) | label | new | label |
+|---|---|---|---|---|
+| 1 | b450021f (card) 6.921 | TRUE | b450021f (card) 6.920 | TRUE |
+| 2 | ac96b069 (card) 5.623 | FALSE | ac96b069 (card) 5.623 | FALSE |
+| 3 | 86987b85 (card) 4.039 | TRUE | 86987b85 (card) 4.039 | TRUE |
+| 4 | 044c7b02 (card) 2.153 | test session | 044c7b02 (card) 2.153 | test session |
+| 5 | 21d526c5 (familiar) 4.534 | FALSE | 6d7eea23 (familiar) 1.543 | FALSE |
+
+Both TRUE hits stay at 1 and 3. Slot 5 changes: 21d526c5 matches
+standard-light only through retrieval acts, so it is now [searched] and
+ranks below 6d7eea23, whose match is a read act (inspecting the preset
+files).
+
+### compatibility.json
+
+old: 044c7b02 (card) 2.843 · 6e168499 (familiar) 4.761 FALSE ·
+21d526c5 (familiar) 4.731 FALSE · 41334c39 (familiar) 2.126 TRUE ·
+8b1b3fb3 (familiar) 1.936 FALSE.
+new: 044c7b02 (card) 2.843 · 41334c39 (familiar) 2.126 TRUE ·
+6e168499 (searched) 4.760 FALSE · 21d526c5 (searched) 4.731 FALSE ·
+8b1b3fb3 (searched) 1.936 FALSE.
+
+The only TRUE hit — 41334c39, which directly read the profile's
+compatibility.json (cat, not a retrieval act) — rises from 4 to 2. The
+three search-only sessions are labelled [searched] and sink below it.
+
+### venexuela
+
+old: 38b3c05c (card) 2.800 TRUE · 044c7b02 (card) 2.524 · 6e168499
+(familiar) 5.502 FALSE · 21d526c5 (familiar) 5.297 FALSE.
+new: 38b3c05c (card) 2.800 TRUE · 044c7b02 (card) 2.524 · 6e168499
+(searched) 5.502 FALSE · 21d526c5 (searched) 5.297 FALSE.
+
+Order unchanged; the two FALSE hits are re-labelled [searched] (their
+only matches were running searches for the word).
+
+### f4c1b1f8 (compatibility.json) — re-adjudication
+
+Verdict: FALSE, correct label [searched]. Its only familiar term
+containing compatibility.json is a bash retrieval command (ls +
+grep "dsh-recall" over the desktop profile dir, including
+$P/compatibility.json) → class retrieval. verify_match.py (bounded
+output) confirms the matching log lines are tool/result events,
+assistant reasoning and that one bash call — no write or read of the
+file. The option B report's "the file was born there" claim is not
+supported by the log; the fix pass's FALSE stands.
+
+### Invariants
+
+- sha256 data/library.db identical before and after three runs of the
+  three queries without --touch:
+  86d65e4647ea3931003f69c88cb1ea4bbc75b4e289cdc8c992386acba2c625c1;
+  no -wal/-journal file created.
+- Pre-change baseline db:
+  7d59207ac2f57ca8f91d05bd871d1c749573afa52646b0dac9d3f5c0e4bb1575.
+- This session (session-73f9ddfc-9226-4a47-ad65-3b7bb1d19d31) excluded
+  from the re-extraction; data/ remains gitignored.

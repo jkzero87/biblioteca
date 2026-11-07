@@ -15,6 +15,10 @@ Two FTS5 tables (unchanged from Phase 2 option B):
 New bio fields from the fix pass: n_retrieval, command_classes, file_classes
 (per-item classes for local salience in search.py).
 
+Fix pass 2 adds familiar_classes: one class per familiar_terms entry
+('retrieval' / 'write' / 'read' / 'error' / 'commit'), feeding the
+[searched] label in search.py.
+
 Project assignment (schema, design.md 3.6): each card is assigned to the
 git repo whose path best matches its cwd and files:
   1. if a git repo equals the cwd or is an ancestor of the cwd, the
@@ -147,6 +151,7 @@ def main():
             files TEXT,
             bash_commands TEXT,
             familiar_terms TEXT,
+            familiar_classes TEXT,
             tool_call_count INTEGER,
             error_count INTEGER,
             commit_hashes TEXT,
@@ -177,7 +182,7 @@ def main():
         project_counts[project] = project_counts.get(project, 0) + 1
         la, ac = carry.get(c["id"], (None, 0))
         con.execute(
-            "INSERT INTO cards VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO cards VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 c["id"],
                 c["source"],
@@ -188,6 +193,7 @@ def main():
                 json.dumps(c.get("files_touched", [])),
                 json.dumps(c.get("bash_commands", [])),
                 json.dumps(c.get("familiar_terms", [])),
+                json.dumps(c.get("familiar_classes", [])),
                 c.get("tool_call_count", 0),
                 c.get("error_count", 0),
                 json.dumps(c.get("commit_hashes", [])),

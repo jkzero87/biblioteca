@@ -7,12 +7,17 @@ Every query word is quoted as an FTS5 phrase, so dots and hyphens work
 (`compatibility.json`, `dsh-recall`, `load.py` -> phrases of adjacent
 tokens).
 
-Two levels, [card] hits always come before [familiar] hits, max 5 lines:
+Three labels in fixed order — [card] > [familiar] > [searched] — max 5 lines:
   level 1 (recollection): cards_fts over first_message, files_touched,
                            bash_commands (retrieval commands never appear
                            here — extract.is_retrieval)
   level 2 (familiarity):  familiar_fts over the lossless familiar_terms,
-                           skipping sessions already returned
+                           skipping sessions already returned. A hit whose
+                           matched familiar terms are ALL retrieval acts is
+                           labelled [searched] (it only searched for the term,
+                           never used it) and ranks after every [familiar]
+                           hit. Nothing is dropped; the 5-line cap still
+                           applies.
 
 Ranking INSIDE each level, after FTS returns candidates (top 50 per level):
   score          = bm25 * recency * local_salience
@@ -218,18 +223,59 @@ def main():
             f"session_sal={session_sal:.1f} score={score:.3f}  {snip}"
         )
 
-    # Level 2: familiar_fts (familiarity), skipping already-returned sessions
+    # Level 2: familiar_fts (familiarity), skipping already-returned sessions.
+    # Which familiar terms of a hit matched is attributed with an in-memory
+    # FTS5 table holding the session's terms as separate documents — same
+    # tokenizer as familiar_fts, so attribution matches the hit exactly.
+    tmp_con = sqlite3.connect(":memory:")
+    tmp_con.execute("CREATE VIRTUAL TABLE tmp_terms USING fts5(term)")
+
+    def match_classes(sid):
+        """Classes of the familiar terms of `sid` that match a query word."""
+        row = con.execute(
+            "SELECT familiar_terms, familiar_classes FROM cards WHERE id = ?",
+            (sid,),
+        ).fetchone()
+        if not row:
+            return []
+        fts_terms = json.loads(row[0] or "[]")
+        cls_of = dict(zip(fts_terms, json.loads(row[1] or "[]")))
+        tmp_con.execute("DELETE FROM tmp_terms")
+        for t in fts_terms:
+            tmp_con.execute("INSERT INTO tmp_terms VALUES (?)", (t,))
+        out = []
+        for w in words:
+            # bound parameter: the FTS5 query is the quoted phrase itself
+            phrase = '"%s"' % w.replace('"', '""')
+            for (t,) in tmp_con.execute(
+                "SELECT term FROM tmp_terms WHERE tmp_terms MATCH ?", (phrase,)
+            ):
+                out.append(cls_of[t])
+        return out
+
+    fam = []
+    searched = []
     for rowid, sid, bm25, recency, session_sal, local_sal, score, smap in ranked_rows("familiar_fts", q, project):
-        if len(lines) >= MAX_LINES:
-            break
-        seen.add(sid)
+        cls = match_classes(sid)
+        is_searched = bool(cls) and all(c == "retrieval" for c in cls)
+        label = "searched" if is_searched else "familiar"
         tag = f"familiar_terms:{smap.get('familiar_terms', 'observed')}"
         snip = snippet_of(con, "familiar_fts", 1, rowid, q)
-        lines.append(
-            f"[familiar] {sid}  {start_of(sid)}  matched={tag}  "
+        line = (
+            f"[{label}] {sid}  {start_of(sid)}  matched={tag}  "
             f"bm25={bm25:.2f} recency={recency:.3f} salience={local_sal:.1f} "
             f"session_sal={session_sal:.1f} score={score:.3f}  {snip}"
         )
+        if is_searched:
+            searched.append((sid, line))
+        else:
+            fam.append((sid, line))
+    # [familiar] first, then [searched]: order [card] > [familiar] >
+    # [searched]; nothing is dropped, the 5-line cap still applies.
+    for sid, line in (fam + searched)[:MAX_LINES - len(lines)]:
+        lines.append(line)
+        seen.add(sid)
+    tmp_con.close()
 
     ms = (time.monotonic() - t0) * 1000
     if touch and seen:
