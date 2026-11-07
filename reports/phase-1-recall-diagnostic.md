@@ -85,12 +85,18 @@ find ~/.local/share/deepseek-harness/sessions -name 'session.v4.jsonl.zstd' -pri
 # newest → current session (excluded), then 3f0a2d79 (4 lines, no conversation), then the 3 in the table
 ```
 
-## 5. dsh-auto-memory compatibility: **undetermined**
+## 5. dsh-auto-memory compatibility: **compatible with dsh 0.2.2-rc.1 (declared ranges verified; not installed)**
 
 - Installed app version: `0.2.2-rc.1` (`grep X-AppImage-Version ~/Applications/DeepSeek-Harness/deepseek-harness.desktop`).
 - No local copy of dsh-auto-memory found: `.local-packages/` contains only the five tarballs listed above; `node_modules/` and `local-llm-lab/plugins/` don't contain it; `find ~ -maxdepth 7 -iname "*auto-memory*"` (excluding `.git`, `node_modules`) returned nothing.
 - The profile `compatibility.json` lists supported dsh versions only for `dsh-free-search`, `dsh-recall` (supports 0.2.1-alpha.2, 0.2.1-rc.2, 0.2.1-rc.5, 0.2.2-rc.1 — i.e. compatible with the installed app) and `dsh-cite-sources`; dsh-auto-memory is absent.
-- To finish the check without network: a local copy of dsh-auto-memory (tarball or source) would be needed to read its `compatibility.json` / `package.json` peerDependencies against app version 0.2.2-rc.1. Otherwise it requires network access to fetch it.
+- **Checked (network, read-only; nothing installed in the profile):** the npm package `dsh-auto-memory` (unscoped), latest **1.3.0**, MIT, source repo `github.com/AskTheWay/dsh-auto-memory` (npm packument `repository` field; npmjs page and GitHub repo seen via search).
+- Its `package.json` declares 8 peerDependencies: `@deepseek-ai/cordis >=4.0.2 <5.0.0` and `@deepseek-ai/{dsh-llm,dsh-agent,dsh-tools,dsh-session,dsh-home-paths,dsh-atomic-write,dsh-system-prompt} >=0.1.5-rc.2 <0.3.0`; engines: `node ^22.19.0 || >=24.0.0`.
+- The installed app (`@deepseek-ai/dsh-desktop 0.2.2-rc.1`, read from its `resources/app.asar` header, read-only) bundles all seven `@deepseek-ai/dsh-*` packages above at **0.2.2-rc.1** and cordis **4.1.0** — every peer range is satisfied (0.2.2-rc.1 falls inside `>=0.1.5-rc.2 <0.3.0`; 4.1.0 inside `>=4.0.2 <5.0.0`), and the bundled Node **24.21.0** (`resources/runtime/versions.json`) satisfies the engines field.
+- The 1.3.0 tarball (inspected in `/tmp`, not downloaded into the profile) contains **no separate compatibility manifest** — only `package.json`, `cordis.patch.yml`, `lib/` and READMEs — so the `package.json` peerDependencies are the compatibility declaration, the same mechanism that populates the profile `compatibility.json`.
+- **Verdict: dsh-auto-memory 1.3.0 declares compatibility with dsh 0.2.2-rc.1 and needs no version exemption** (contrast dsh-recall 0.1.0, whose `^0.1.x` ranges excluded 0.2.x and required the exemption recorded in `.plugin-manager.log`). The plugin remains absent from this profile; this verdict only says installing it from npm would pass the peer-dependency check.
+- Note: scoped look-alikes exist — `@a9i5k4/dsh-auto-memory` (v3.3.17) and `@y0shua1ee/dsh-auto-memory` (v0.3.3) — separate packages; this verdict covers the unscoped `dsh-auto-memory` only.
+- Sources: npmjs package page and registry packument (`registry.npmjs.org/dsh-auto-memory`), GitHub repo `AskTheWay/dsh-auto-memory`, app.asar and `versions.json` of the installed app.
 
 ## 6. Recommendation (a recommendation, not applied)
 
