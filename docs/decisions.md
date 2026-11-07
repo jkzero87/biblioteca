@@ -52,3 +52,12 @@ Search records access only with --touch (used by the Phase 4 server). Test runs 
 
 ## 2026-11-07 — Familiarity keeps its source: [familiar] vs [searched]
 A familiarity hit that matches only through search commands is labelled [searched] and ranks last. Order: [card] > [familiar] > [searched]. Nothing is dropped. Why: after the previous fix, 4 of 5 compatibility.json hits were sessions that only searched for it, burying the one session that used the file.
+
+## 2026-11-07 — Resident process, disk db, no pre-cut excerpts (yet)
+The server opens the db once from disk and reopens it when the file changes; no in-memory copy. Episodes are decompressed on open, with an LRU cache. Why: Phase 3 measured disk 0.8 ms vs RAM 0.7 ms median and 10-31 ms to decompress the largest sessions; process start-up (32 ms) was the only real cost.
+
+## 2026-11-07 — Excerpt = anchor + forward context (temporal contiguity)
+library_open returns the matched event with the highest salience as anchor, one event before it and the events after it, up to a measured token cap. Every block carries its source tag. Why: recalling an event cues events close in time, more strongly forward (temporal contiguity, Kahana 1996); the cost of opening is tokens, not milliseconds. Peak-end was considered and rejected: it describes hedonic evaluation, not retrieval, and does not hold for day-long experiences.
+
+## 2026-11-07 — MCP over stdio, launched by dsh
+One @deepseek-ai/dsh-mcp-client entry (serverName biblioteca, transport stdio) in the desktop profile; dsh starts and stops the process. The manifiestate launchers are not changed. Stdlib only. The server answers unknown methods with -32601 so clients that probe server/discover fall back to initialize at once; it reads no env vars because the client strips DSH_*.

@@ -25,3 +25,9 @@
 - Ben-Yakov & Henson (2018), The hippocampal film editor, J. Neurosci. 38:10057 — https://pmc.ncbi.nlm.nih.gov/articles/PMC6246887
 - Frey & Morris (1997), Synaptic tagging and long-term potentiation, Nature 385:533-536 — https://doi.org/10.1038/385533a0
 - Roediger & Karpicke (2006), Test-enhanced learning, Psychological Science 17:249-255 — https://doi.org/10.1111/j.1467-9280.2006.01693.x
+- MCP spec, stdio transport — https://modelcontextprotocol.io/specification/latest/basic/transports/stdio
+- MCP spec 2025-11-25, lifecycle — https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle
+- dsh MCP subsystem — https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/mcp.md
+- dsh-mcp-client README — https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/mcp/mcp-client/README.md
+- dsh guide, third-party memory MCP servers — https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/guide/mcp-memory.md
+- Healey, Long & Kahana (2019), Contiguity in episodic memory, Psychon. Bull. Rev. — https://pmc.ncbi.nlm.nih.gov/articles/PMC6529295
