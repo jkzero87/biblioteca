@@ -32,9 +32,11 @@ import search
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(ROOT, "data", "library.db")
 
-# Token budget (measured in Phase 4 step 3 against llama-server /tokenize):
-SEARCH_CHAR_CAP = 2000   # worst library_search output <= 300 tokens
-OPEN_CHAR_CAP = 8000     # worst library_open output <= 1500 tokens
+# Token budget, measured in Phase 4 step 3 against llama-server /tokenize
+# (5 real Phase 3 queries): worst search was 1350 chars / 702 tokens, worst
+# open 7788 chars / 2793 tokens. Caps sized so worst <= 300 / <= 1500 tokens.
+SEARCH_CHAR_CAP = 570    # worst library_search output <= 300 tokens
+OPEN_CHAR_CAP = 3350     # worst library_open output <= 1500 tokens
 
 SERVER_VERSION = "0.1.0"
 SUPPORTED_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
@@ -262,14 +264,13 @@ def library_search(db, query, project):
     text = "\n".join(lines) + "\n" + trailer
     if len(text) > SEARCH_CHAR_CAP:
         # keep as many whole lines as fit under the cap, drop the rest
+        trailer = "[truncated at %d chars: %s]" % (SEARCH_CHAR_CAP, trailer)
         kept = []
-        total = 0
         for l in lines:
-            if kept and total + len(l) + 1 + len(trailer) + 12 > SEARCH_CHAR_CAP:
+            cand = "\n".join(kept + [l]) + "\n" + trailer
+            if kept and len(cand) > SEARCH_CHAR_CAP:
                 break
             kept.append(l)
-            total += len(l) + 1
-        trailer = "[truncated at %d chars, %s]" % (SEARCH_CHAR_CAP, trailer)
         text = "\n".join(kept) + "\n" + trailer
     return tool_ok(text)
 
