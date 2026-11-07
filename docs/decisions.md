@@ -61,3 +61,6 @@ library_open returns the matched event with the highest salience as anchor, one 
 
 ## 2026-11-07 — MCP over stdio, launched by dsh
 One @deepseek-ai/dsh-mcp-client entry (serverName biblioteca, transport stdio) in the desktop profile; dsh starts and stops the process. The manifiestate launchers are not changed. Stdlib only. The server answers unknown methods with -32601 so clients that probe server/discover fall back to initialize at once; it reads no env vars because the client strips DSH_*.
+
+## 2026-11-07 — The end of an episode is reachable directly
+library_open accepts at="end" (window ending at the last event) and from_seq (continue forward from a cut). Why: in the first live use the agent asked what was left pending and needed 3 opens without reaching the session's end. The hippocampus responds most at event boundaries, which appear to wrap up the preceding event as a unit (Ben-Yakov & Henson 2018); recall stores page through history instead of re-anchoring (MemGPT/Letta conversation_search).
