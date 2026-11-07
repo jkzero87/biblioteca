@@ -37,3 +37,6 @@ Integration through MCP (dsh has an MCP client; also usable from Claude Code) ra
 ## 2026-11-07 — Familiarity + recollection (two-level index)
 Search has two levels: cards (recollection: curated, capped, salience-ordered fields) and a lossless per-session term list (familiarity: every file path and bash command, no cap). Results are labelled [card] or [familiar]. Card display fields are chosen by salience (errors, commits, writes first), not by order of arrival.
 Why: Phase 2 search missed compatibility.json, present in the logs but past the 30-command cap. State of the art keeps a lossless layer under the curated one (Zep episode subgraph, MemGPT/Letta recall storage); biology separates familiarity (perirhinal, fast, "seen before") from recollection (hippocampus, detailed).
+
+## 2026-11-07 — No scene segmentation for now
+Sessions are not split into scenes: one card per session. Measurements (reports/phase-2-scene-measure.md, 148 sessions): median 1 user message, p90 3; 99 of 148 sessions are single-message and hold 48% of all chars; only 4 sessions have ≥7 user messages. Scene-level segmentation does not pay off yet.

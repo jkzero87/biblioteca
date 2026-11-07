@@ -33,6 +33,17 @@ Card fields and their source in the log:
   error_count      <- count of `tool/result` with data.message.isError == true
   commit_hashes    <- regex `[branch <sha>]` in non-error tool results
                        (first-seen order, cap 20)
+  n_writes         <- count of `write`/`edit` tool/call events that carry a
+                       file_path/path argument (one per event, not per file)
+  n_commits        <- len(commit_hashes)
+  n_new_files      <- file paths first seen in THIS session, sessions
+                       processed in start-time order; a path already seen in
+                       any earlier session is not new. Path sources:
+                       write/edit/read args + tool/result meta path(s).
+                       Recorded, not part of the salience formula.
+  source_map       <- per-field source tag: 'observed' (read from a tool
+                       call/result in the log) or 'user' (said by the user).
+                       Nothing is tagged 'model' in this phase.
 
 Usage:
   python3 src/extract.py [--exclude=session-uuid-prefix]... [--root DIR] [--out FILE]
@@ -54,6 +65,26 @@ FAMILIAR_CMD_CHARS = 300
 COMMIT_RE = re.compile(r"\[[^\s\]]+ ([0-9a-f]{7,40})\]")
 WRITE_MARKERS = ("sed -i", "tee", " > ", ">>", "mv ", "cp ", "rm ")
 COMMIT_MARKERS = ("git commit", "git push")
+
+# Source monitoring (design.md 3.7): every stored field carries its origin.
+# Phase 2b has no model involvement, so nothing is tagged 'model'.
+SOURCE_MAP = {
+    "id": "observed",
+    "source": "observed",
+    "start": "observed",
+    "end": "observed",
+    "cwd": "observed",
+    "first_message": "user",
+    "files_touched": "observed",
+    "bash_commands": "observed",
+    "familiar_terms": "observed",
+    "tool_call_count": "observed",
+    "error_count": "observed",
+    "n_writes": "observed",
+    "n_commits": "observed",
+    "n_new_files": "observed",
+    "commit_hashes": "observed",
+}
 
 
 def find_logs(root, excludes):
@@ -144,6 +175,8 @@ def extract_card(path):
     bash_calls = []           # (full_command, callId) in chronological order
     call_errors = {}          # callId -> True if any result isError
     commits = OrderedDict()
+    paths_seen = set()        # every file path in this session (n_new_files)
+    n_writes = 0              # write/edit tool calls carrying a path
     min_t = max_t = None
     bad_lines = 0
     for line in iter_lines(path):
@@ -191,10 +224,13 @@ def extract_card(path):
                     if cmd[:FAMILIAR_CMD_CHARS] not in familiar:
                         familiar[cmd[:FAMILIAR_CMD_CHARS]] = None
             if name in FILE_TOOLS:
+                got_path = False
                 for k in ("file_path", "path"):
                     v = args.get(k)
                     if not isinstance(v, str) or not v:
                         continue
+                    got_path = True
+                    paths_seen.add(v)
                     if name in WRITE_TOOLS:
                         if v not in written:
                             written[v] = None
@@ -202,6 +238,8 @@ def extract_card(path):
                     else:
                         if v not in readonly:
                             readonly[v] = None
+                if name in WRITE_TOOLS and got_path:
+                    n_writes += 1
         elif et == "tool/result":
             msg = data.get("message") if isinstance(data.get("message"), dict) else {}
             cid = msg.get("toolCallId")
@@ -218,6 +256,7 @@ def extract_card(path):
                     familiar[v] = None
                 if v not in readonly and v not in written:
                     readonly[v] = None
+                paths_seen.add(v)
             paths = meta.get("paths")
             if isinstance(paths, list):
                 for v in paths:
@@ -226,6 +265,7 @@ def extract_card(path):
                             familiar[v] = None
                         if v not in readonly and v not in written:
                             readonly[v] = None
+                        paths_seen.add(v)
             if msg.get("isError") is not True:
                 content = text_of(msg.get("content"))
                 for m in COMMIT_RE.finditer(content):
@@ -254,6 +294,10 @@ def extract_card(path):
     card["bash_commands"] = [bash_calls[i][0][:120] for i in order[:MAX_COMMANDS]]
     card["familiar_terms"] = list(familiar)
     card["commit_hashes"] = list(commits)
+    card["n_writes"] = n_writes
+    card["n_commits"] = len(commits)
+    card["source_map"] = dict(SOURCE_MAP)
+    card["_paths"] = paths_seen  # consumed by main() for n_new_files
     if bad_lines:
         card["bad_lines"] = bad_lines
     return card
@@ -284,6 +328,13 @@ def main():
             cards.append(extract_card(path))
         except Exception as e:
             failures.append({"path": path, "reason": f"{type(e).__name__}: {e}"})
+    # n_new_files: process sessions in start-time order (id breaks ties);
+    # a path is "new" only if no earlier session touched it.
+    seen_paths = set()
+    for c in sorted(cards, key=lambda c: (c.get("start") or "", c["id"])):
+        p = c.pop("_paths", set())
+        c["n_new_files"] = len(p - seen_paths)
+        seen_paths |= p
     cards.sort(key=lambda c: c["id"])
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w") as f:
