@@ -123,9 +123,9 @@ disk vs RAM is nearly equal" — exactly what the measurements show.
 
 ## 7. Reproduce
 
-- Script: `data/bench_phase3.py` (stdlib + zstd CLI; read-only on logs and db;
+- Script: `src/bench_phase3.py` (stdlib + zstd CLI; read-only on logs and db;
   `search.py` never run with `--touch`; no network, no model, no sudo).
-- Rerun: `python3 data/bench_phase3.py` — writes `data/phase3_results.json`,
+- Rerun: `python3 src/bench_phase3.py` — writes `data/phase3_results.json`,
   pre-cuts excerpts into `data/episodes/`.
 - Inputs: `data/phase3_queries.json`, `data/phase3_queries_detail.json`,
   `data/phase3_top5.json`.
