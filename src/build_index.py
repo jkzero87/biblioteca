@@ -7,7 +7,13 @@ previous db, so a rebuild does not reset them.
 
 Two FTS5 tables (unchanged from Phase 2 option B):
   cards_fts    - recollection: first_message, files_touched, bash_commands
-  familiar_fts - familiarity: familiar_terms (lossless, no cap)
+                 (bash_commands never contains retrieval commands — see
+                 extract.is_retrieval; searching is not evidence)
+  familiar_fts - familiarity: familiar_terms (lossless, no cap, retrieval
+                 included)
+
+New bio fields from the fix pass: n_retrieval, command_classes, file_classes
+(per-item classes for local salience in search.py).
 
 Project assignment (schema, design.md 3.6): each card is assigned to the
 git repo whose path best matches its cwd and files:
@@ -147,6 +153,9 @@ def main():
             n_writes INTEGER,
             n_commits INTEGER,
             n_new_files INTEGER,
+            n_retrieval INTEGER,
+            command_classes TEXT,
+            file_classes TEXT,
             project TEXT,
             last_accessed TEXT,
             access_count INTEGER,
@@ -168,7 +177,7 @@ def main():
         project_counts[project] = project_counts.get(project, 0) + 1
         la, ac = carry.get(c["id"], (None, 0))
         con.execute(
-            "INSERT INTO cards VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO cards VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 c["id"],
                 c["source"],
@@ -185,6 +194,9 @@ def main():
                 c.get("n_writes", 0),
                 c.get("n_commits", 0),
                 c.get("n_new_files", 0),
+                c.get("n_retrieval", 0),
+                json.dumps(c.get("command_classes", [])),
+                json.dumps(c.get("file_classes", [])),
                 project,
                 la,
                 ac,

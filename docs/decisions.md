@@ -40,3 +40,12 @@ Why: Phase 2 search missed compatibility.json, present in the logs but past the 
 
 ## 2026-11-07 — No scene segmentation for now
 Sessions are not split into scenes: one card per session. Measurements (reports/phase-2-scene-measure.md, 148 sessions): median 1 user message, p90 3; 99 of 148 sessions are single-message and hold 48% of all chars; only 4 sessions have ≥7 user messages. Scene-level segmentation does not pay off yet.
+
+## 2026-11-07 — Searching is not working (source monitoring)
+Commands that search (src/search.py, verify_match.py, grep, rg, find -name) stay in the familiarity layer but are never evidence on a card. Why: Phase 2b ranked a test session first for any query it had searched for; remembering that you looked for X is not remembering X.
+
+## 2026-11-07 — Salience is local to the match
+Ranking uses salience of the matched items only (errors, commits, writes that contain the query), not of the whole session. Why: in tag-and-capture a strong event stabilises only nearby traces; session-wide salience let busy sessions outrank the right ones (standard-light: true hits fell from 1-2 to 1-4).
+
+## 2026-11-07 — Only real retrieval counts as use
+Search records access only with --touch (used by the Phase 4 server). Test runs never change ranking. Why: retrieval strengthens memory (testing effect), but test queries are not use; all accesses recorded before this date were tests and were reset.

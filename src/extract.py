@@ -23,12 +23,14 @@ Card fields and their source in the log:
                        2) contains "git commit"/"git push",
                        3) writes ("sed -i","tee"," > ",">>","mv ","cp ","rm "),
                        4) the rest; chronological order kept inside each
-                       priority. Deterministic (stable sort).
+                       priority. Deterministic (stable sort). RETRIEVAL
+                       commands (is_retrieval below) never appear here.
   familiar_terms   <- LOSSLESS, no cap: every distinct file path from
                        tool/call args (`file_path`/`path`, any tool) and
                        tool/result `data.meta.path`/`meta.paths`, plus every
-                       distinct bash command (each truncated to 300 chars).
-                       First-seen order. Feeds the familiarity FTS table.
+                       distinct bash command (each truncated to 300 chars),
+                       INCLUDING retrieval commands. First-seen order.
+                       Feeds the familiarity FTS table.
   tool_call_count  <- count of `tool/call` events
   error_count      <- count of `tool/result` with data.message.isError == true
   commit_hashes    <- regex `[branch <sha>]` in non-error tool results
@@ -36,6 +38,19 @@ Card fields and their source in the log:
   n_writes         <- count of `write`/`edit` tool/call events that carry a
                        file_path/path argument (one per event, not per file)
   n_commits        <- len(commit_hashes)
+  n_retrieval      <- count of bash calls classified as RETRIEVAL
+                       (is_retrieval): the command runs src/search.py or
+                       src/verify_match.py, or grep/rg/egrep, or find with
+                       -name/-iname/-path (any shell segment). Such commands
+                       stay in familiar_terms (lossless) but are excluded
+                       from bash_commands: searching is not evidence.
+  command_classes  <- one class per bash_commands entry: 'error' /
+                       'commit' / 'write' / 'read' (the same classes used
+                       for the salience ordering). Feeds local salience in
+                       search.py.
+  file_classes     <- one class per files_touched entry: 'write'
+                       (write/edit call) or 'read' (read-only). Feeds local
+                       salience in search.py.
   n_new_files      <- file paths first seen in THIS session, sessions
                        processed in start-time order; a path already seen in
                        any earlier session is not new. Path sources:
@@ -65,6 +80,11 @@ FAMILIAR_CMD_CHARS = 300
 COMMIT_RE = re.compile(r"\[[^\s\]]+ ([0-9a-f]{7,40})\]")
 WRITE_MARKERS = ("sed -i", "tee", " > ", ">>", "mv ", "cp ", "rm ")
 COMMIT_MARKERS = ("git commit", "git push")
+# Source monitoring: retrieval commands run a search over the logs or the
+# filesystem. They are remembered (familiar_terms) but are never evidence.
+RETRIEVAL_PROGS = ("grep", "egrep", "rg")
+RETRIEVAL_SCRIPTS = ("src/search.py", "src/verify_match.py")
+FIND_NAME_FLAGS = ("-name", "-iname", "-path")
 
 # Source monitoring (design.md 3.7): every stored field carries its origin.
 # Phase 2b has no model involvement, so nothing is tagged 'model'.
@@ -83,6 +103,9 @@ SOURCE_MAP = {
     "n_writes": "observed",
     "n_commits": "observed",
     "n_new_files": "observed",
+    "n_retrieval": "observed",
+    "command_classes": "observed",
+    "file_classes": "observed",
     "commit_hashes": "observed",
 }
 
@@ -154,6 +177,33 @@ def salience_prio(full_cmd, call_id, call_errors):
     return 3
 
 
+def is_retrieval(cmd):
+    """Source monitoring: True if any shell segment of `cmd` RUNS a
+    retrieval command — src/search.py, src/verify_match.py, grep, rg,
+    egrep, or find with -name/-iname/-path. Searching is not evidence, so
+    such commands stay in familiar_terms (lossless) but are excluded from
+    bash_commands. Segments are split on `;` `|` `||` `&&`; leading
+    VAR=value assignments are skipped before the program is read."""
+    for seg in re.split(r"&&|\|\||[;|]", cmd):
+        words = seg.split()
+        i = 0
+        while i < len(words) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[i]):
+            i += 1
+        if i >= len(words):
+            continue
+        prog = os.path.basename(words[i])
+        if prog in RETRIEVAL_PROGS:
+            return True
+        if prog == "find" and any(f in words[i + 1:] for f in FIND_NAME_FLAGS):
+            return True
+        if prog.startswith("python") and any(s in seg for s in RETRIEVAL_SCRIPTS):
+            return True
+    return False
+
+
+CLASS_NAMES = ("error", "commit", "write", "read")
+
+
 def extract_card(path):
     card = {
         "id": None,
@@ -177,6 +227,7 @@ def extract_card(path):
     commits = OrderedDict()
     paths_seen = set()        # every file path in this session (n_new_files)
     n_writes = 0              # write/edit tool calls carrying a path
+    n_retrieval = 0           # bash calls that only search (never evidence)
     min_t = max_t = None
     bad_lines = 0
     for line in iter_lines(path):
@@ -221,6 +272,9 @@ def extract_card(path):
                 cmd = args.get("command", "")
                 if isinstance(cmd, str):
                     bash_calls.append((cmd, call_id))
+                    if is_retrieval(cmd):
+                        n_retrieval += 1
+                    # familiar_terms is lossless: retrieval stays here
                     if cmd[:FAMILIAR_CMD_CHARS] not in familiar:
                         familiar[cmd[:FAMILIAR_CMD_CHARS]] = None
             if name in FILE_TOOLS:
@@ -284,18 +338,27 @@ def extract_card(path):
     card["start"] = iso(min_t)
     card["end"] = iso(max_t)
     # display files: written first, then only-read, chronological inside each group
-    card["files_touched"] = (list(written) + list(readonly))[:MAX_FILES]
+    files_display = (list(written) + list(readonly))[:MAX_FILES]
+    card["files_touched"] = files_display
+    card["file_classes"] = ["write" if f in written else "read" for f in files_display]
     # display bash commands: salience-ordered (stable sort keeps chronology inside
-    # each priority), deterministic
+    # each priority), deterministic; RETRIEVAL commands never appear (searching
+    # is not evidence — they stay in familiar_terms)
     order = sorted(
-        range(len(bash_calls)),
+        (i for i in range(len(bash_calls)) if not is_retrieval(bash_calls[i][0])),
         key=lambda i: salience_prio(bash_calls[i][0], bash_calls[i][1], call_errors),
     )
-    card["bash_commands"] = [bash_calls[i][0][:120] for i in order[:MAX_COMMANDS]]
+    chosen = order[:MAX_COMMANDS]
+    card["bash_commands"] = [bash_calls[i][0][:120] for i in chosen]
+    card["command_classes"] = [
+        CLASS_NAMES[salience_prio(bash_calls[i][0], bash_calls[i][1], call_errors)]
+        for i in chosen
+    ]
     card["familiar_terms"] = list(familiar)
     card["commit_hashes"] = list(commits)
     card["n_writes"] = n_writes
     card["n_commits"] = len(commits)
+    card["n_retrieval"] = n_retrieval
     card["source_map"] = dict(SOURCE_MAP)
     card["_paths"] = paths_seen  # consumed by main() for n_new_files
     if bad_lines:

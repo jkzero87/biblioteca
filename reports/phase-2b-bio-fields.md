@@ -141,3 +141,73 @@ their project is `biblioteca`.)
   accessed sessions climb in rank on subsequent queries.
 - `n_new_files` is recorded per card but, per the task, is not part of the
   salience formula.
+
+## Fix pass (2026-11-07)
+
+Three changes (see docs/decisions.md, 2026-11-07 entries): source
+monitoring (retrieval commands — src/search.py, src/verify_match.py,
+grep/egrep/rg, find -name/-iname/-path — stay in familiar_terms but are
+excluded from bash_commands and cards_fts, counted per card as
+n_retrieval), local salience (score = bm25 × recency × local_salience,
+local_salience = 1 + 0.2·min(matched error/commit/write items, 10); old
+session-wide salience still printed as session_sal, not used in the
+score), and access only with --touch (db opened read-only by default).
+
+Baseline: old = ba6f45a (phase 2b code), 149 cards, excluding
+session-21d526c5 and the fix-pass session; new = 150 cards, only the
+fix-pass session excluded. Note: 21d526c5 therefore exists only in the
+new db (it was excluded from the phase-2b db). Both runs are fresh,
+no --touch, access_count/last_accessed NULL before the test queries.
+
+### standard-light
+
+| # | old (ba6f45a) | label | new | label |
+|---|---|---|---|---|
+| 1 | 86987b85 (card) 7.913 | TRUE | b450021f (card) 7.413 | TRUE |
+| 2 | ac96b069 (card) 7.503 | FALSE | ac96b069 (card) 6.015 | FALSE |
+| 3 | 8b1b3fb3 (card) 6.989 | FALSE | 86987b85 (card) 4.324 | TRUE |
+| 4 | b450021f (card) 5.064 | TRUE | 21d526c5 (familiar) 4.733 | FALSE |
+| 5 | 6e168499 (card) 4.303 | FALSE | 6e168499 (familiar) 4.517 | FALSE |
+
+TRUE hits at positions 1–4 (old) → 1–3 (new). 8b1b3fb3, whose only match
+was a search command, drops out of the top 5. 21d526c5 (new db only)
+appears via familiarity, matching only through retrieval acts — FALSE
+by design, since familiarity is lossless. 6d7eea23 (user-labelled
+FALSE) also drops out.
+
+### compatibility.json
+
+old: 6e168499 (card, commands) FALSE 17.111 · 8b1b3fb3 (card, commands)
+FALSE 5.210 · 41334c39 (familiar) TRUE 4.249 · f4c1b1f8 (familiar)
+FALSE 2.288.
+new: 6e168499 (familiar) FALSE 5.013 · 21d526c5 (familiar) FALSE 4.982
+· 41334c39 (familiar) TRUE 2.235 · 8b1b3fb3 (familiar) FALSE 2.034 ·
+f4c1b1f8 (familiar) FALSE 1.356.
+
+Every card-level match was a search command, so all hits now come from
+familiar_terms. The only TRUE hit, 41334c39, matches on directly
+reading the profile's compatibility.json (cat, not a retrieval act)
+and stays in the top 5. 21d526c5 (new db only) is a test session whose
+only matches are retrieval acts — FALSE.
+
+### venexuela
+
+old: 6e168499 (card, commands) FALSE 5.372 · 38b3c05c (card,
+first_message) TRUE 4.639.
+new: 38b3c05c (card, first_message) TRUE 3.142 · 6e168499 (familiar)
+FALSE 5.991 · 21d526c5 (familiar) FALSE 5.768.
+
+The only true hit ("¿quién es el presidente de venexuela?") rises from
+position 2 to 1: card level precedes familiar level, and the retrieval-act
+match of 6e168499 no longer sits on a card.
+
+### Invariants
+
+- sha256 data/library.db identical before and after running search.py
+  five times without --touch (3 queries + 2 reruns of standard-light):
+  7d59207ac2f57ca8f91d05bd871d1c749573afa52646b0dac9d3f5c0e4bb1575;
+  no -wal/-journal file created.
+- access_count/last_accessed reset to NULL for all 150 cards after the
+  rebuild; build_index carry-over verified (the rebuild started from a
+  db that still carried the old access values).
+- n_retrieval total across 150 cards: 453 (35 cards with n_retrieval > 0).

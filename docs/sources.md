@@ -23,3 +23,5 @@
 - Yonelinas (2002), The nature of recollection and familiarity, J. Mem. Lang. 46:441-517 — https://doi.org/10.1006/jmla.2002.2864
 - Diana, Yonelinas & Ranganath review (hippocampus = recollection, perirhinal = familiarity) — https://pmc.ncbi.nlm.nih.gov/articles/PMC2064941
 - Ben-Yakov & Henson (2018), The hippocampal film editor, J. Neurosci. 38:10057 — https://pmc.ncbi.nlm.nih.gov/articles/PMC6246887
+- Frey & Morris (1997), Synaptic tagging and long-term potentiation, Nature 385:533-536 — https://doi.org/10.1038/385533a0
+- Roediger & Karpicke (2006), Test-enhanced learning, Psychological Science 17:249-255 — https://doi.org/10.1111/j.1467-9280.2006.01693.x
