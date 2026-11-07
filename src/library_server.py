@@ -70,10 +70,10 @@ TOOLS = [
     {
         "name": "library_open",
         "description": (
-            "Open a session by id: card header plus events from one before the "
-            "salient anchor onward, labelled [observed], [user] or "
-            "[model said \u2014 verify]. Optional query anchors on events "
-            "containing its terms."
+            "Open a session by id: card header + seq-numbered blocks "
+            "([observed], [user], [model said \u2014 verify]). Query anchors "
+            "start; from_seq resumes cuts; at=\"end\" reads the tail. Cut "
+            "ends: next: from_seq=<n>."
         ),
         "inputSchema": {
             "type": "object",
@@ -82,6 +82,20 @@ TOOLS = [
                 "query": {
                     "type": "string",
                     "description": "Optional term narrowing the anchor event.",
+                },
+                "from_seq": {
+                    "type": "integer",
+                    "description":
+                        "Start the window at the first event with this seq and go "
+                        "forward (no anchor search); continues a previous cut.",
+                },
+                "at": {
+                    "type": "string",
+                    "enum": ["end"],
+                    "description":
+                        "at=\"end\": window ends at the last event, extends backward "
+                        "to the cap; always includes the last user message and the "
+                        "last assistant text.",
                 },
             },
             "required": ["id"],
@@ -315,8 +329,10 @@ def parse_events(text):
             continue
         t = ev.get("type")
         data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        seq = ev.get("seq")
         if t == "user/message":
-            events.append({"kind": "user", "text": extract.text_of(data.get("content"))})
+            events.append({"kind": "user", "seq": seq,
+                           "text": extract.text_of(data.get("content"))})
         elif t == "assistant/message":
             m = data.get("message") if isinstance(data.get("message"), dict) else {}
             text = extract.visible_text(m)
@@ -324,7 +340,7 @@ def parse_events(text):
             # "[model said — verify]" block (reasoning-only / tool-call-only
             # messages carry no user-visible content)
             if text.strip():
-                events.append({"kind": "assistant", "text": text})
+                events.append({"kind": "assistant", "seq": seq, "text": text})
         elif t == "tool/call":
             name = data.get("name") or ""
             args = extract.args_of(ev)
@@ -335,7 +351,8 @@ def parse_events(text):
             cid = m.get("toolCallId")
             if cid is None:
                 cid = data.get("callId")
-            e = {"kind": "tool", "name": name, "cmd": cmd, "result": "", "is_error": False}
+            e = {"kind": "tool", "seq": seq, "name": name, "cmd": cmd,
+                 "result": "", "is_error": False}
             events.append(e)
             if cid is not None:
                 calls[str(cid)] = e
@@ -370,19 +387,31 @@ def event_class(e):
 
 
 def render_event(e):
+    # Every block starts with its event seq number.
+    tag = "[%s] " % e["seq"] if e.get("seq") is not None else ""
     cls = event_class(e)
     if e["kind"] == "user":
-        return ["[user] " + clip(e["text"], MSG_CHARS)]
+        return [tag + "[user] " + clip(e["text"], MSG_CHARS)]
     if e["kind"] == "assistant":
-        return ["[model said \u2014 verify] " + clip(e["text"], MSG_CHARS)]
+        return [tag + "[model said \u2014 verify] " + clip(e["text"], MSG_CHARS)]
     err = " (error)" if e["is_error"] else ""
-    out = ["[observed] %s [%s]: %s%s" % (e["name"], cls, clip(e["cmd"], TOOL_CALL_CHARS), err)]
+    out = [tag + "[observed] %s [%s]: %s%s" % (e["name"], cls, clip(e["cmd"], TOOL_CALL_CHARS), err)]
     if e["result"]:
         out.append("[observed] result: " + clip(e["result"], RESULT_CHARS))
     return out
 
 
-def library_open(db, sid, query, cache):
+def _trailer_line(events, first_unshown_idx):
+    """Exact last line when the window is cut: next: from_seq=<n>."""
+    if first_unshown_idx is None or first_unshown_idx >= len(events):
+        return None
+    seq = events[first_unshown_idx].get("seq")
+    if seq is None:
+        return None
+    return "next: from_seq=%s" % seq
+
+
+def library_open(db, sid, query, cache, from_seq=None, at=None):
     con = db.con()
     row = con.execute(
         "SELECT source, start, end, project, first_message FROM cards WHERE id = ?",
@@ -395,7 +424,78 @@ def library_open(db, sid, query, cache):
         events = decode_session(source, cache)
     except Exception as exc:
         return tool_error("cannot decode %s: %s" % (os.path.basename(source), exc))
+    if not events:
+        return tool_error("session %s has no events" % sid)
 
+    header = (
+        "[card] %s  %s -> %s  project=%s  first: %s"
+        % (sid, start, end, project, clip(first_message or "", 100))
+    )
+
+    # --- at="end": window ENDS at the last event, extends backwards to the
+    # cap; the last user message and the last non-empty assistant text are
+    # always included.
+    if at == "end":
+        last_user = last_assist = None
+        for i, e in enumerate(events):
+            if e["kind"] == "user":
+                last_user = i
+            elif e["kind"] == "assistant":
+                last_assist = i  # parse_events drops assistant events with no visible text
+        required = [i for i in (last_user, last_assist) if i is not None]
+        # window start must stay at or before this index so the last user
+        # message and last assistant text are always included; when neither
+        # exists, the cap alone decides (may cut down to the last event)
+        floor = min(required) if required else len(events) - 1
+        blocks = [render_event(e) for e in events]
+        all_lines = [header] + [l for b in blocks for l in b]
+        total_len = sum(len(l) for l in all_lines) + (len(all_lines) - 1)
+        # smallest s in [0, floor] such that events[s:] fits the cap
+        s = 0
+        while s < floor and total_len > OPEN_CHAR_CAP:
+            b = blocks[s]
+            # dropping block s removes its lines, the newlines inside it, and
+            # the one newline after it
+            total_len -= sum(len(l) for l in b) + len(b)
+            s += 1
+        starts = []
+        li = 1
+        for b in blocks:
+            starts.append(li)
+            li += len(b)
+        out = all_lines[starts[s]:]
+        if s > 0:
+            # the cut-off prefix is events[0:s]; first unshown event is events[0]
+            out.append(_trailer_line(events, 0))
+        return tool_ok("\n".join(out) + "\n")
+
+    # --- from_seq: start the window at the first event with seq >= from_seq
+    # and go forward (no anchor search).
+    if from_seq is not None:
+        start = None
+        for i, e in enumerate(events):
+            if e.get("seq") is not None and e["seq"] >= from_seq:
+                start = i
+                break
+        if start is None:
+            return tool_error("no event with seq >= %d in %s" % (from_seq, sid))
+        out = [header]
+        # always include the requested start event (like the anchor), so the
+        # trailer always points past it and chained from_seq calls progress
+        out += render_event(events[start])
+        last_shown = start
+        for i in range(start + 1, len(events)):
+            block = render_event(events[i])
+            if len("\n".join(out + block)) > OPEN_CHAR_CAP:
+                break
+            out += block
+            last_shown = i
+        trailer = _trailer_line(events, last_shown + 1)
+        if trailer is not None:
+            out.append(trailer)
+        return tool_ok("\n".join(out) + "\n")
+
+    # --- default: anchor search (existing behavior)
     terms = [w.lower() for w in (query or "").split() if w]
     best = None  # (index, event, rank)
     for i, e in enumerate(events):
@@ -407,30 +507,25 @@ def library_open(db, sid, query, cache):
         if best is None or rank > best[2]:
             best = (i, e, rank)
     if best is None:
-        if terms:
-            return tool_error(
-                "no event in %s contains any of: %s" % (sid, ", ".join(terms))
-            )
-        return tool_error("session %s has no events" % sid)
+        return tool_error(
+            "no event in %s contains any of: %s" % (sid, ", ".join(terms))
+        )
     idx, anchor, rank = best
 
-    header = (
-        "[card] %s  %s -> %s  project=%s  first: %s"
-        % (sid, start, end, project, clip(first_message or "", 100))
-    )
     out = [header]
     if idx > 0:
         out += render_event(events[idx - 1])
     out += render_event(anchor)
-    truncated = False
-    for e in events[idx + 1:]:
-        block = render_event(e)
+    last_shown = idx
+    for i in range(idx + 1, len(events)):
+        block = render_event(events[i])
         if len("\n".join(out + block)) > OPEN_CHAR_CAP:
-            truncated = True
             break
         out += block
-    if truncated:
-        out.append("[truncated at %d chars]" % OPEN_CHAR_CAP)
+        last_shown = i
+    trailer = _trailer_line(events, last_shown + 1)
+    if trailer is not None:
+        out.append(trailer)
     return tool_ok("\n".join(out) + "\n")
 
 
@@ -478,8 +573,18 @@ def dispatch(method, params, db, cache):
                 return tool_error("library_open needs a non-empty string 'id'")
             if query is not None and not isinstance(query, str):
                 return tool_error("library_open 'query' must be a string")
+            from_seq = args.get("from_seq")
+            at = args.get("at")
+            if from_seq is not None and (
+                isinstance(from_seq, bool) or not isinstance(from_seq, int)
+            ):
+                return tool_error("library_open 'from_seq' must be an integer")
+            if at is not None and at != "end":
+                return tool_error("library_open 'at' must be \"end\"")
+            if from_seq is not None and at is not None:
+                return tool_error("library_open: 'from_seq' and 'at' are mutually exclusive")
             try:
-                return library_open(db, sid, query, cache)
+                return library_open(db, sid, query, cache, from_seq=from_seq, at=at)
             except Exception as exc:
                 return tool_error("library_open failed: %s" % exc)
         return tool_error("unknown tool: %s" % name)
