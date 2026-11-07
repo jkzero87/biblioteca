@@ -168,6 +168,21 @@ def text_of(content):
     return ""
 
 
+def visible_text(message):
+    """The assistant's VISIBLE text: only content blocks of type 'text'.
+
+    Excludes 'reasoning' blocks (chain of thought, not visible to the user)
+    and 'tool-call' blocks. Returns '' when the message has no visible text.
+    """
+    c = message.get("content")
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        return " ".join(b.get("text", "") for b in c
+                        if isinstance(b, dict) and b.get("type") == "text")
+    return ""
+
+
 def args_of(event):
     a = event.get("data", {}).get("arguments")
     if isinstance(a, str):

@@ -319,7 +319,12 @@ def parse_events(text):
             events.append({"kind": "user", "text": extract.text_of(data.get("content"))})
         elif t == "assistant/message":
             m = data.get("message") if isinstance(data.get("message"), dict) else {}
-            events.append({"kind": "assistant", "text": extract.text_of(m.get("content"))})
+            text = extract.visible_text(m)
+            # skip messages with no visible text: never render an empty
+            # "[model said — verify]" block (reasoning-only / tool-call-only
+            # messages carry no user-visible content)
+            if text.strip():
+                events.append({"kind": "assistant", "text": text})
         elif t == "tool/call":
             name = data.get("name") or ""
             args = extract.args_of(ev)
