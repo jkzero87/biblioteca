@@ -18,3 +18,8 @@
 - Claude Code auto memory (MEMORY.md index + topic files, first 200 lines / 25 KB loaded).
 - dsh plugins reviewed: dsh-auto-memory (AskTheWay), dsh-memento (PerryLink), dsh-memory (LZMW), dsh-recall (Relistencode), dsh-memory-openviking.
 - Mem0, Zep/Graphiti, Letta (MemGPT) — reviewed, not adopted at this stage.
+- Zep: A Temporal Knowledge Graph Architecture for Agent Memory — https://arxiv.org/abs/2501.13956
+- Letta, MemGPT agent architecture (recall memory) — https://docs.letta.com/guides/agents/architectures/memgpt
+- Yonelinas (2002), The nature of recollection and familiarity, J. Mem. Lang. 46:441-517 — https://doi.org/10.1006/jmla.2002.2864
+- Diana, Yonelinas & Ranganath review (hippocampus = recollection, perirhinal = familiarity) — https://pmc.ncbi.nlm.nih.gov/articles/PMC2064941
+- Ben-Yakov & Henson (2018), The hippocampal film editor, J. Neurosci. 38:10057 — https://pmc.ncbi.nlm.nih.gov/articles/PMC6246887

@@ -73,3 +73,45 @@ Con `git status --porcelain --ignored` y `git check-ignore -v`:
 ```
 
 `data/` esta ignorada por `.gitignore` (linea 1): nunca se comite.
+
+## Option B — Familiaridad + recollection (indice de dos niveles)
+
+### Que cambio
+- `src/extract.py`: nuevo campo `familiar_terms` (perdido: todas las rutas de archivo de tool calls/results + todos los comandos bash, cada uno <=300 chars, sin tope de cantidad); `bash_commands` ordenado por saliencia (errores, `git commit`/`git push`, escrituras, el resto; cronologico dentro de cada prioridad, <=30 comandos x 120 chars); `files_touched` con escritos/edutados primero y solo-leidos despues (<=40).
+- `src/build_index.py`: dos tablas FTS5: `cards_fts` (first_message, files_touched, bash_commands — recollection) y `familiar_fts` (familiar_terms, una fila por sesion — familiaridad); reconstruccion atomica (tmp + `os.replace`), idempotente.
+- `src/search.py`: consulta `cards_fts` primero y luego `familiar_fts` excluyendo las sesiones ya devueltas; maximo 5 lineas; cada linea empieza con `[card]` o `[familiar]`, id de sesion, fecha, campo(s) que coincidio y snippet <=80 chars (FTS5 `snippet()`); cada palabra de la consulta va entrecomillada como frase FTS5 (puntos y guiones funcionan); imprime bytes y milisegundos.
+
+### Tests
+- **a) compatibility.json** — 3 aciertos (el archivo estaba mas alla del tope de 30 comandos y ahora se encuentra):
+  - `[card]` session-8b1b3fb3 (commands_text)
+  - `[familiar]` session-41334c39
+  - `[familiar]` session-f4c1b1f8 (la sesion donde nacio el archivo)
+- **b) standard-light** — 5 aciertos, evaluados uno a uno:
+  - session-b450021f — TRUE (la sesion buscaba el prompt del preset Standard light)
+  - session-86987b85 — TRUE (reemplazo de un bloque de reglas del preset)
+  - session-ac96b069 — FALSE (solo aparece la ruta `dsh-preset-standard-light/...` en files/commands; la sesion trataba el espacio en disco de los modelos)
+  - session-8b1b3fb3 — FALSE (solo el literal "standard-light" dentro de un comando de busqueda en commands_text)
+  - session-6d7eea23 — FALSE (solo la ruta del preset en familiar_terms; la sesion trataba un problema de monitores)
+- **c) venexuela** (tema de sesion antigua; palabra tomada de los first_message de las 10 tarjetas mas viejas) — 1 acierto `[card]` session-38b3c05c (first_message "quien es el presidente de venexuela?"); verificado contra el log crudo con `verify_match.py`: 3 lineas coincidentes (<=5 lineas / 200 chars).
+- **d) Idempotencia** — extract + build_index ejecutados dos veces: sha256 de `data/cards.jsonl`, `data/library.db` y de las lineas de resultado de las busquedas a/b/c identicos entre corridas (la linea final con milisegundos es tiempo en vivo y queda fuera del hash).
+
+### Antes / despues
+| Metrica | Antes | Despues |
+|---|---|---|
+| Tamano de `data/library.db` | 454656 bytes | 1273856 bytes |
+| compatibility.json, mediana (n=21, in-process) | 0.3 ms | 0.9 ms |
+| standard-light, mediana (n=21) | 0.4 ms | 1.5 ms |
+| venexuela, mediana (n=21) | 0.4 ms | 0.7 ms |
+
+### Comandos usados
+```
+python3 src/extract.py --exclude=session-6e168499   # 147 logs, 147 cards, 0 fallos
+python3 src/build_index.py
+python3 src/search.py compatibility.json
+python3 src/search.py standard-light
+python3 src/search.py venexuela
+python3 src/verify_match.py <dir-de-sesion> venexuela
+```
+
+### Git
+`data/` sigue ignorada (`.gitignore` linea 1; `git check-ignore` la confirma); `git status` solo muestra los cambios de `src/`, `docs/decisions.md`, `docs/sources.md` y este reporte.

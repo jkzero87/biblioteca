@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 2 step 2/3: extract one mechanical card per session.
+"""Phase 2 (option B): extract one mechanical card per session.
 
 Reads every session.v4.jsonl.zstd read-only, streamed via `zstd -dc`.
 Writes data/cards.jsonl (one JSON card per line, sorted by id) and prints
@@ -9,19 +9,30 @@ Card fields and their source in the log:
   id               <- `session` event field `id`
   source           <- path of the .zstd file
   start / end      <- min / max of `time` (ms epoch) over all events;
-                      start also cross-checked against `session.createdAt`
+                       start also cross-checked against `session.createdAt`
   cwd              <- `session.cwd`
   first_message    <- first `user/message` with data.source.kind == 'user',
-                      joined text blocks, truncated to 300 chars
-  files_touched    <- tool/call args `file_path`/`path` for read|write|edit
-                      plus tool/result `data.meta.path` / `data.meta.paths`
-                      (dedup, first-seen order, cap 40)
-  bash_commands    <- tool/call name=='bash', args `command` (first 30,
-                      each truncated to 120 chars)
+                       joined text blocks, truncated to 300 chars
+  files_touched    <- display list, cap 40. Files written/edited (write|edit
+                       tool/call args) first, then files only read (read args,
+                       tool/result `data.meta.path`/`meta.paths`), chronological
+                       inside each group.
+  bash_commands    <- display list, cap 30 x 120 chars, chosen by SALIENCE,
+                       not order: 1) command whose result isError (via
+                       `data.message.toolCallId` on tool/result),
+                       2) contains "git commit"/"git push",
+                       3) writes ("sed -i","tee"," > ",">>","mv ","cp ","rm "),
+                       4) the rest; chronological order kept inside each
+                       priority. Deterministic (stable sort).
+  familiar_terms   <- LOSSLESS, no cap: every distinct file path from
+                       tool/call args (`file_path`/`path`, any tool) and
+                       tool/result `data.meta.path`/`meta.paths`, plus every
+                       distinct bash command (each truncated to 300 chars).
+                       First-seen order. Feeds the familiarity FTS table.
   tool_call_count  <- count of `tool/call` events
   error_count      <- count of `tool/result` with data.message.isError == true
   commit_hashes    <- regex `[branch <sha>]` in non-error tool results
-                      (first-seen order, cap 20)
+                       (first-seen order, cap 20)
 
 Usage:
   python3 src/extract.py [--exclude=session-uuid-prefix]... [--root DIR] [--out FILE]
@@ -35,10 +46,14 @@ from collections import OrderedDict
 
 DEFAULT_ROOT = os.path.expanduser("~/.local/share/deepseek-harness/sessions")
 FILE_TOOLS = {"read", "write", "edit"}
+WRITE_TOOLS = {"write", "edit"}
 MAX_FILES = 40
 MAX_COMMANDS = 30
 MAX_COMMIT_HASHES = 20
+FAMILIAR_CMD_CHARS = 300
 COMMIT_RE = re.compile(r"\[[^\s\]]+ ([0-9a-f]{7,40})\]")
+WRITE_MARKERS = ("sed -i", "tee", " > ", ">>", "mv ", "cp ", "rm ")
+COMMIT_MARKERS = ("git commit", "git push")
 
 
 def find_logs(root, excludes):
@@ -97,6 +112,17 @@ def args_of(event):
     return a if isinstance(a, dict) else {}
 
 
+def salience_prio(full_cmd, call_id, call_errors):
+    """0 = errored call, 1 = commit/push, 2 = write, 3 = rest. Deterministic."""
+    if call_errors.get(call_id):
+        return 0
+    if any(m in full_cmd for m in COMMIT_MARKERS):
+        return 1
+    if any(m in full_cmd for m in WRITE_MARKERS):
+        return 2
+    return 3
+
+
 def extract_card(path):
     card = {
         "id": None,
@@ -107,11 +133,16 @@ def extract_card(path):
         "first_message": None,
         "files_touched": [],
         "bash_commands": [],
+        "familiar_terms": [],
         "tool_call_count": 0,
         "error_count": 0,
         "commit_hashes": [],
     }
-    files = OrderedDict()
+    written = OrderedDict()   # path -> first-seen order (write/edit calls)
+    readonly = OrderedDict()  # path -> first-seen order (everything else)
+    familiar = OrderedDict()  # lossless terms (paths + bash commands)
+    bash_calls = []           # (full_command, callId) in chronological order
+    call_errors = {}          # callId -> True if any result isError
     commits = OrderedDict()
     min_t = max_t = None
     bad_lines = 0
@@ -142,31 +173,61 @@ def extract_card(path):
             card["tool_call_count"] += 1
             name = data.get("name")
             args = args_of(ev)
+            call_id = None
+            msg = data.get("message") if isinstance(data.get("message"), dict) else {}
+            cid = msg.get("toolCallId")
+            if cid is None:
+                cid = data.get("callId")
+            call_id = str(cid) if cid is not None else None
+            # every file path in call args feeds the lossless familiarity list
+            for k in ("file_path", "path"):
+                v = args.get(k)
+                if isinstance(v, str) and v and v not in familiar:
+                    familiar[v] = None
             if name == "bash":
-                if len(card["bash_commands"]) < MAX_COMMANDS:
-                    cmd = args.get("command", "")
-                    if isinstance(cmd, str):
-                        card["bash_commands"].append(cmd[:120])
+                cmd = args.get("command", "")
+                if isinstance(cmd, str):
+                    bash_calls.append((cmd, call_id))
+                    if cmd[:FAMILIAR_CMD_CHARS] not in familiar:
+                        familiar[cmd[:FAMILIAR_CMD_CHARS]] = None
             if name in FILE_TOOLS:
                 for k in ("file_path", "path"):
                     v = args.get(k)
-                    if isinstance(v, str) and v and v not in files:
-                        files[v] = None
+                    if not isinstance(v, str) or not v:
+                        continue
+                    if name in WRITE_TOOLS:
+                        if v not in written:
+                            written[v] = None
+                            readonly.pop(v, None)
+                    else:
+                        if v not in readonly:
+                            readonly[v] = None
         elif et == "tool/result":
-            if data.get("message", {}).get("isError") is True:
+            msg = data.get("message") if isinstance(data.get("message"), dict) else {}
+            cid = msg.get("toolCallId")
+            if cid is None:
+                cid = data.get("callId")
+            if isinstance(msg.get("isError"), bool) and msg.get("isError") is True:
                 card["error_count"] += 1
+                if cid is not None:
+                    call_errors[str(cid)] = True
             meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
-            for k in ("path",):
-                v = meta.get(k)
-                if isinstance(v, str) and v and v not in files:
-                    files[v] = None
+            v = meta.get("path")
+            if isinstance(v, str) and v:
+                if v not in familiar:
+                    familiar[v] = None
+                if v not in readonly and v not in written:
+                    readonly[v] = None
             paths = meta.get("paths")
             if isinstance(paths, list):
                 for v in paths:
-                    if isinstance(v, str) and v not in files:
-                        files[v] = None
-            if data.get("message", {}).get("isError") is not True:
-                content = text_of(data.get("message", {}).get("content"))
+                    if isinstance(v, str) and v:
+                        if v not in familiar:
+                            familiar[v] = None
+                        if v not in readonly and v not in written:
+                            readonly[v] = None
+            if msg.get("isError") is not True:
+                content = text_of(msg.get("content"))
                 for m in COMMIT_RE.finditer(content):
                     if m.group(1) not in commits and len(commits) < MAX_COMMIT_HASHES:
                         commits[m.group(1)] = None
@@ -182,7 +243,16 @@ def extract_card(path):
         )
     card["start"] = iso(min_t)
     card["end"] = iso(max_t)
-    card["files_touched"] = list(files)[:MAX_FILES]
+    # display files: written first, then only-read, chronological inside each group
+    card["files_touched"] = (list(written) + list(readonly))[:MAX_FILES]
+    # display bash commands: salience-ordered (stable sort keeps chronology inside
+    # each priority), deterministic
+    order = sorted(
+        range(len(bash_calls)),
+        key=lambda i: salience_prio(bash_calls[i][0], bash_calls[i][1], call_errors),
+    )
+    card["bash_commands"] = [bash_calls[i][0][:120] for i in order[:MAX_COMMANDS]]
+    card["familiar_terms"] = list(familiar)
     card["commit_hashes"] = list(commits)
     if bad_lines:
         card["bad_lines"] = bad_lines

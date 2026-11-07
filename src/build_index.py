@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
-"""Phase 2 step 4: build a SQLite FTS5 index over the cards.
+"""Phase 2 (option B): build the two-level SQLite FTS5 index.
 
 Reads data/cards.jsonl, rebuilds data/library.db atomically (temp file +
 os.replace). Idempotent: same cards -> same db -> same search results.
+
+Two FTS5 tables:
+  cards_fts    - recollection: first_message, files_touched, bash_commands
+                 (curated, capped, salience-ordered display fields), one row
+                 per session
+  familiar_fts - familiarity: familiar_terms (lossless per-session list of
+                 every file path and bash command, no cap), one row per session
 
 Usage: python3 src/build_index.py [--cards FILE] [--db FILE]
 """
@@ -48,18 +55,24 @@ def main():
             first_message TEXT,
             files TEXT,
             bash_commands TEXT,
+            familiar_terms TEXT,
             tool_call_count INTEGER,
             error_count INTEGER,
             commit_hashes TEXT
         );
+        -- recollection: curated, capped display fields
         CREATE VIRTUAL TABLE cards_fts USING fts5(
             id, first_message, files_text, commands_text, tokenize='unicode61'
+        );
+        -- familiarity: lossless per-session term list
+        CREATE VIRTUAL TABLE familiar_fts USING fts5(
+            id, terms_text, tokenize='unicode61'
         );
         """
     )
     for c in cards:
         con.execute(
-            "INSERT INTO cards VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO cards VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 c["id"],
                 c["source"],
@@ -69,6 +82,7 @@ def main():
                 c.get("first_message"),
                 json.dumps(c.get("files_touched", [])),
                 json.dumps(c.get("bash_commands", [])),
+                json.dumps(c.get("familiar_terms", [])),
                 c.get("tool_call_count", 0),
                 c.get("error_count", 0),
                 json.dumps(c.get("commit_hashes", [])),
@@ -82,6 +96,10 @@ def main():
                 " ".join(c.get("files_touched", [])),
                 "\n".join(c.get("bash_commands", [])),
             ),
+        )
+        con.execute(
+            "INSERT INTO familiar_fts VALUES (?,?)",
+            (c["id"], " ".join(c.get("familiar_terms", []))),
         )
     con.commit()
     con.close()

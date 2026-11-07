@@ -33,3 +33,7 @@ Integration through MCP (dsh has an MCP client; also usable from Claude Code) ra
 
 ## 2026-11-06 — Personal data never committed
 `data/` is git-ignored; the repo holds code and docs only.
+
+## 2026-11-07 — Familiarity + recollection (two-level index)
+Search has two levels: cards (recollection: curated, capped, salience-ordered fields) and a lossless per-session term list (familiarity: every file path and bash command, no cap). Results are labelled [card] or [familiar]. Card display fields are chosen by salience (errors, commits, writes first), not by order of arrival.
+Why: Phase 2 search missed compatibility.json, present in the logs but past the 30-command cap. State of the art keeps a lossless layer under the curated one (Zep episode subgraph, MemGPT/Letta recall storage); biology separates familiarity (perirhinal, fast, "seen before") from recollection (hippocampus, detailed).
