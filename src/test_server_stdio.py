@@ -6,7 +6,10 @@ Spawns the server and, over stdio:
   (b) initializes with protocolVersion "2025-11-25" + notifications/initialized;
   (c) tools/list;
   (d) library_search and library_open with a real query from the Phase 3 list
-      (data/phase3_queries.json), not a biblioteca session.
+      (data/phase3_queries.json), not a biblioteca session;
+  (e) library_open from_seq=<n>, continuing from (d)'s next: trailer (or,
+      when (d) was not truncated, from its first block's seq);
+  (f) library_open at="end".
 Prints each response truncated to 300 chars and the elapsed ms.
 
 Stdlib only; the db is opened by the server (which records access for the
@@ -14,6 +17,7 @@ returned [card] hits, as it must).
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -103,6 +107,49 @@ def main():
     res = msg["result"]
     assert res["isError"] is False
     print("  OK: opened %s (search anchor from first [card] hit)" % sid)
+
+    # (e) from_seq follow-up: continue from the (d) open's next: trailer
+    # (or, if that open was not truncated, from its first block's seq)
+    text = res["content"][0]["text"]
+    lines = text.rstrip("\n").split("\n")
+    m = re.match(r"^next: from_seq=(\d+)$", lines[-1])
+    if m:
+        n, origin = int(m.group(1)), "trailer"
+    else:
+        n, origin = int(lines[1][1:lines[1].index("]")]), "first block seq"
+    msg, ms = call("tools/call", mid=5, params={
+        "name": "library_open",
+        "arguments": {"id": sid, "from_seq": n},
+    })
+    res = msg["result"]
+    assert res["isError"] is False, res
+    t2 = res["content"][0]["text"]
+    l2 = t2.rstrip("\n").split("\n")
+    first = int(l2[1][1:l2[1].index("]")])
+    assert first >= n, "window must start at seq >= %d, got %d" % (n, first)
+    m2 = re.match(r"^next: from_seq=(\d+)$", l2[-1])
+    if m2:
+        assert int(m2.group(1)) > first, "trailer must point past the start"
+    print("  OK: from_seq=%d (from %s) -> first shown seq %d, trailer %s, %.1f ms"
+          % (n, origin, first, m2.group(1) if m2 else "none", ms))
+
+    # (f) at="end": window ends at the last event and always includes the last
+    # user message and the last non-empty assistant text
+    msg, ms = call("tools/call", mid=6, params={
+        "name": "library_open",
+        "arguments": {"id": sid, "at": "end"},
+    })
+    res = msg["result"]
+    assert res["isError"] is False, res
+    t3 = res["content"][0]["text"]
+    l3 = t3.rstrip("\n").split("\n")
+    has_user = any(re.match(r"^\[\d+\] \[user\] ", l) for l in l3)
+    has_assist = any(re.match(r"^\[\d+\] \[model said", l) for l in l3)
+    assert has_user, "at=end must include the last [user] message"
+    assert has_assist, "at=end must include the last [model said] text"
+    trailer = re.match(r"^next: from_seq=\d+$", l3[-1])
+    print("  OK: at=end includes last [user] and [model said] blocks; "
+          "front trailer %s, %.1f ms" % ("yes" if trailer else "no", ms))
 
     proc.stdin.close()
     stderr = proc.stderr.read()
