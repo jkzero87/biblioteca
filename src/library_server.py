@@ -43,14 +43,19 @@ CHAR_RATIO_FALLBACK = 2.5
 # open 7788 chars / 2793 tokens. Caps sized so worst <= 300 / <= 1500 tokens.
 SEARCH_CHAR_CAP = 570    # worst library_search output <= 300 tokens
 OPEN_CHAR_CAP = 3350     # worst library_open output <= 1500 tokens
-# Coarse-to-fine outline (phase 4 fix step 2): library_open with only an id
-# returns the card header plus one line per landmark event (user messages
-# and tool calls of class write/commit/error). OUTLINE_CHAR_CAP is chosen
-# by src/measure_outline.py so the worst outline over the 5 largest
-# sessions stays <= 350 tokens; each landmark line's text is clipped to
-# OUTLINE_LINE_CHARS.
+# Coarse-to-fine outline (phase 4 fix step 2; revised in the small fix
+# pass): library_open with only an id returns the card header plus up to
+# OUTLINE_TOOL_LANDMARKS tool landmark lines - highest class first
+# (error > commit > write, ties -> later in session, since later results
+# are closer to the end state), each with its outcome - and then user
+# messages (first 3, then last 3) until the cap is met. User lines are
+# clipped to OUTLINE_USER_CHARS, tool lines to OUTLINE_LINE_CHARS.
+# OUTLINE_CHAR_CAP is chosen by src/measure_outline.py so the worst
+# outline over the 5 largest sessions stays <= 350 tokens.
+OUTLINE_USER_CHARS = 60
 OUTLINE_LINE_CHARS = 100
-OUTLINE_CHAR_CAP = 940  # incl. next: trailer; worst outline over 5 largest sessions = 333 tokens <= 350
+OUTLINE_TOOL_LANDMARKS = 4
+OUTLINE_CHAR_CAP = 803  # incl. next: trailer; worst outline over 5 largest sessions = 348 tokens <= 350
 # Landmark outcome (phase 4 fix 2 step 2): appended after " -> " to each
 # tool-call landmark line - "error" if isError, else the first non-empty
 # result line containing a digit or an outcome keyword, clipped to
@@ -447,33 +452,33 @@ def _outcome(result):
 
 def _outline_landmarks(events):
     """Landmark events in session order: user messages and tool calls of
-    class write/commit/error. Returns (event, tag, text) with the line text
-    clipped to OUTLINE_LINE_CHARS. Tool-call lines carry the outcome after
-    " -> " (phase 4 fix 2 step 2); the cmd is what gets clipped, never the
-    outcome."""
+    class write/commit/error that carry an outcome. Returns (event, tag,
+    text): user text clipped to OUTLINE_USER_CHARS; tool text is
+    "name [cls]: cmd -> outcome" with the cmd clipped so the whole line
+    stays within OUTLINE_LINE_CHARS (never the outcome). Tool events
+    without an outcome are not landmarks."""
     out = []
     for e in events:
         if e["kind"] == "user":
-            out.append((e, "user", clip(e["text"], OUTLINE_LINE_CHARS)))
+            # clip appends an ellipsis, so clip to n-1 to stay <= n chars
+            out.append((e, "user", clip(e["text"], OUTLINE_USER_CHARS - 1)))
         elif e["kind"] == "tool":
             cls = event_class(e)
             if cls in ("write", "commit", "error"):
-                base = "%s [%s]: %s" % (e["name"], cls, e["cmd"])
                 out_txt = "error" if e["is_error"] else _outcome(e.get("result") or "")
                 if out_txt:
-                    room = max(10, OUTLINE_LINE_CHARS - 3 - len(out_txt))
+                    base = "%s [%s]: %s" % (e["name"], cls, e["cmd"])
+                    room = max(10, OUTLINE_LINE_CHARS - 4 - len(out_txt))
                     out.append((e, "observed", clip(base, room) + " \u2192 " + out_txt))
-                else:
-                    out.append((e, "observed", clip(base, OUTLINE_LINE_CHARS)))
     return out
 
 
 def _outline_text(events, header, cap, sid):
-    """Coarse-to-fine outline: header + one line per landmark, session
-    order. When the full list exceeds cap: keep the first 3 and last 3
-    user messages, then fill with the highest-class tool landmarks
-    (error > commit > write, session order for ties) until cap is met,
-    and state how many landmark lines were omitted."""
+    """Coarse-to-fine outline: header, then up to OUTLINE_TOOL_LANDMARKS
+    tool landmark lines (highest class first: error > commit > write,
+    ties -> later in session, since later results are closer to the end
+    state), each with its outcome, then user messages (first 3, then
+    last 3) until cap is met; the rest is counted in the omitted note."""
     lands = _outline_landmarks(events)
     lines = ["[%s] [%s] %s" % (e.get("seq"), tag, text) for e, tag, text in lands]
 
@@ -483,45 +488,28 @@ def _outline_text(events, header, cap, sid):
             t += len(note_) + 1
         return t
 
-    kept_idx = list(range(len(lines)))
-    note = None
-    if total(kept_idx) > cap:
-        user_idx = [i for i, (e, tag, _) in enumerate(lands) if tag == "user"]
-        kept = set(user_idx[:3] + user_idx[-3:])
-        tools = sorted((i for i in range(len(lands)) if i not in kept),
-                       key=lambda i: (-CLASS_RANK[event_class(lands[i][0])], i))
-        for i in tools:
-            kept.add(i)
-            if total(sorted(kept)) > cap:
-                kept.remove(i)
-                break
-        kept_idx = sorted(kept)
-        note = None
-        while True:
-            omitted = len(lands) - len(kept_idx)
-            note = "[omitted %d landmark line(s)]" % omitted if omitted else None
-            if total(kept_idx, note) <= cap:
-                break
-            # free space, least valuable first: lowest-class kept tool lines,
-            # then the last-3 user lines, then the first-3 (reverse session
-            # order within each tier)
-            kept_set = set(kept_idx)
-            drop = []
-            seen = set()
-            for i in (
-                sorted((k for k in kept_idx if lands[k][1] == "observed"),
-                       key=lambda i: (CLASS_RANK[event_class(lands[i][0])], i))
-                + sorted((k for k in user_idx[-3:] if k in kept_set), reverse=True)
-                + sorted((k for k in user_idx[:3] if k in kept_set), reverse=True)
-            ):
-                if i not in seen:
-                    seen.add(i)
-                    drop.append(i)
-            if not drop:
-                note = None
-                break
-            kept_idx.remove(drop[0])
-            kept_idx = sorted(kept_idx)
+    user_idx = [i for i, (e, tag, _) in enumerate(lands) if tag == "user"]
+    tool_idx = sorted((i for i, (e, tag, _) in enumerate(lands) if tag == "observed"),
+                      key=lambda i: (-CLASS_RANK[event_class(lands[i][0])], -i))
+    kept = tool_idx[:OUTLINE_TOOL_LANDMARKS]
+    fill = user_idx[:3] + [i for i in user_idx[-3:] if i not in user_idx[:3]]
+    for i in fill:
+        if total(sorted(kept + [i])) <= cap:
+            kept.append(i)
+    kept_set = set(kept)
+    kept_idx = sorted(kept)
+    omitted = len(lands) - len(kept_idx)
+    note = "[omitted %d landmark line(s)]" % omitted if omitted else None
+    # never drop a tool landmark: free user lines first, last-added first
+    while note and total(kept_idx, note) > cap:
+        fillers = [i for i in kept_idx if i not in kept_set]
+        if not fillers:
+            note = None
+            break
+        kept_idx.remove(max(fillers))
+        kept_idx = sorted(kept_idx)
+        omitted = len(lands) - len(kept_idx)
+        note = "[omitted %d landmark line(s)]" % omitted if omitted else None
     out = [header] + [lines[i] for i in kept_idx]
     if note:
         out.append(note)
