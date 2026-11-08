@@ -51,7 +51,8 @@ OPEN_CHAR_CAP = 3350     # worst library_open output <= 1500 tokens
 # results are closer to the end state), each with its outcome, all
 # rendered in session order until the cap is met. User lines are clipped
 # to OUTLINE_USER_CHARS, tool lines to OUTLINE_LINE_CHARS. User messages
-# starting with "<system-reminder>" are harness text and never appear.
+# starting with a harness prefix (extract.HARNESS_PREFIXES, the single
+# list) are harness text and never appear.
 # OUTLINE_CHAR_CAP is chosen by src/measure_outline.py so the worst
 # outline over the 5 largest sessions stays <= 350 tokens.
 OUTLINE_USER_CHARS = 60
@@ -430,9 +431,10 @@ def event_class(e):
 
 def _is_harness_user(e):
     """Harness text, never shown as [user] (outline fix 2 step 2): user
-    messages whose text starts with "<system-reminder>" after stripping
-    whitespace (the harness injects them, the user did not type them)."""
-    return e.get("text", "").strip().startswith("<system-reminder>")
+    messages whose text starts with a harness prefix after stripping
+    leading whitespace (extract.HARNESS_PREFIXES, the single list — the
+    harness injects them, the user did not type them)."""
+    return extract.starts_with_harness_prefix(e.get("text", ""))
 
 
 def render_event(e):
@@ -499,7 +501,7 @@ def _outline_landmarks(events):
     "name [cls]: cmd -> outcome" with the cmd clipped so the whole line
     stays within OUTLINE_LINE_CHARS (never the outcome). Tool events
     without an outcome are not landmarks. User messages that are harness
-    text (<system-reminder>, outline fix 2) are not landmarks."""
+    text (harness prefix, outline fix 2) are not landmarks."""
     out = []
     for e in events:
         if e["kind"] == "user":
@@ -688,8 +690,8 @@ def library_open(db, sid, query, cache, from_seq=None, at=None):
                 last_user = i
             elif e["kind"] == "assistant":
                 last_assist = i  # parse_events drops assistant events with no visible text
-        # harness user events (<system-reminder>, outline fix 2) are never
-        # rendered as [user]: they cost nothing in the window
+        # harness user events (extract.HARNESS_PREFIXES, outline fix 2)
+        # are never rendered as [user]: they cost nothing in the window
         blocks = [render_event(e)
                   if not (e["kind"] == "user" and _is_harness_user(e)) else []
                   for e in events]

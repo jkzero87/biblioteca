@@ -4,8 +4,8 @@ texts across all library sessions, with counts.
 
 Read-only (zstd -dc, stdlib). Prints prefixes and counts only — never full
 messages. Excludes: this session (argv[1], session id), and user messages
-whose stripped text starts with the two known harness prefixes
-("<system-reminder>", "Time sampled while preparing turn").
+whose stripped text starts with a harness prefix
+(extract.HARNESS_PREFIXES, the single list).
 No other prefix is excluded; the list is for the user's decision.
 """
 import json
@@ -16,7 +16,7 @@ import sys
 sys.path.insert(0, "src")
 import extract
 
-HARNESS_PREFIXES = ("<system-reminder>", "Time sampled while preparing turn")
+HARNESS_PREFIXES = extract.HARNESS_PREFIXES
 
 
 def main():

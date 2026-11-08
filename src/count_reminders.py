@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Outline fix 2 step 2a: count user/message events whose text starts with
-"<system-reminder>" (after stripping whitespace) across all sessions.
+a harness prefix (extract.HARNESS_PREFIXES, after stripping leading
+whitespace) across all sessions.
 
 This session (passed as an argument, default none) is excluded. Reads logs
 read-only via zstd -dc, stdlib only, no network, no model. Prints aggregates
@@ -37,11 +38,11 @@ def main():
         total += n
     print("sessions scanned: %d (excluded: %s)" % (len(logs), ", ".join(excludes) or "none"))
     print("sessions affected: %d" % affected)
-    print("system-reminder user events: %d" % total)
+    print("harness user events: %d" % total)
 
 
 def _is_harness(e):
-    return e.get("text", "").strip().startswith("<system-reminder>")
+    return extract.starts_with_harness_prefix(e.get("text", ""))
 
 
 if __name__ == "__main__":

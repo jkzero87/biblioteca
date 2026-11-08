@@ -38,6 +38,8 @@ import os
 import sqlite3
 import sys
 
+import extract
+
 HOME = os.path.expanduser("~")
 SKIP_DIRS = {"node_modules", ".venv", "venv", "__pycache__"}
 REPO_MAX_DEPTH = 4
@@ -209,11 +211,14 @@ def main():
                 json.dumps(c.get("source_map", {})),
             ),
         )
+        # harness text is never indexed as user text (extract.HARNESS_PREFIXES)
+        fm = c.get("first_message")
+        fm_fts = "" if extract.starts_with_harness_prefix(fm) else (fm or "")
         con.execute(
             "INSERT INTO cards_fts VALUES (?,?,?,?)",
             (
                 c["id"],
-                c.get("first_message") or "",
+                fm_fts,
                 " ".join(c.get("files_touched", [])),
                 "\n".join(c.get("bash_commands", [])),
             ),
