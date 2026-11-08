@@ -114,12 +114,44 @@ Same script (`src/phase4_live_use.py`), this session excluded. 5 sessions now ha
 
 **Agent's final answer (seq 98, 1855 chars):** a complete structured summary — what was done per turn (recon, workspace setup, `convert.rs` + tests, unwrap fix, `cargo test` 6 passed), what is pending (`main.rs` still a stub, deps unused, no cutover), and the verdict "Did the library save work? Yes, substantially" (it would otherwise have needed log digging, re-reading `imgproxy.py`, and re-running `cargo build --timings`). Note: the answer self-reports "one search, six opens"; the log records 1 search + 15 opens — the "six" is an undercount in the agent's own summary, not a log discrepancy.
 
-**Summary (Runs 1–3):**
+## Run 4 (budget + outline with outcomes)
+
+Same script (`src/phase4_live_use.py`), this session excluded. 6 sessions now have `mcp__biblioteca__*` calls; the most recent selected:
+
+- id: `session-a1e496f2-cb1b-4fad-b650-3f517c4794b9`
+- ended: 2026-11-07T21:47:08 (local, America/Bogota)
+- context: same task as Run 3 — reconstruct what was done in the Rust rewrite of imgproxy (`~/rust-lab`) so it can be resumed, using only the library tools. The agent: one search, one no-arg open (outline), one `at="end"` open, a two-call tail check (`from_seq=355`, `from_seq=398`), one `query` open for the pending items, a 5-step `from_seq` re-walk 249 → 276 → 300 → 322 → 341, and a closing search.
+
+| seq | tool | args | result chars | result tokens | truncated | budget message |
+|----:|------|------|-------------:|--------------:|:---------:|:--------------:|
+| 19 | `library_search` | query=`imgproxy Rust rewrite` project=`rust-lab` | 300 | 143 | no | no |
+| 24 | `library_open` | id=`session-c5f86181-…` (no query, no at) → outline | 887 | 327 | no | no |
+| 29 | `library_open` | id=…, at=`end` | 6040 | 2077 | no | no |
+| 34 | `library_open` | id=…, from_seq=355 | 3039 | 1102 | no | no |
+| 36 | `library_open` | id=…, from_seq=398 | 567 | 228 | no | no |
+| 41 | `library_open` | id=…, query=`pending next steps remaining` | 3351 | 1143 | no | no |
+| 46 | `library_open` | id=…, from_seq=249 | 3204 | 1100 | no | no |
+| 51 | `library_open` | id=…, from_seq=276 | 3292 | 1067 | no | no |
+| 56 | `library_open` | id=…, from_seq=300 | 2290 | 776 | no | no |
+| 61 | `library_open` | id=…, from_seq=322 | 2847 | 924 | no | no |
+| 66 | `library_open` | id=…, from_seq=341 | 2830 | 1060 | no | no |
+| 71 | `library_search` | query=`cargo imgproxy` project=`rust-lab` | 324 | 163 | no | no |
+
+**Totals (Run 4):** 12 calls · 28971 result chars · 10110 result tokens.
+
+**Budget (Run 4):** no result was the budget message (each result text checked against the exact prefix `Budget for this session reached`). All 12 calls fell in one ~3-minute window (21:43:44 → 21:46:26), so no 30-min reset was possible. Notably, the live server did not enforce the in-memory budget: text served through seq 34 was 10266 chars = 4106.4 budget tokens (chars/2.5, already ≥ `BUDGET_TOKENS` = 4000 in a fresh 30-min window — the last serve of the opened session `c5f86181` was Run 3, ~20:03, >30 min earlier), so under the current code (`ba0df76`, committed 2026-11-07T20:47:24, before this run) the seq 36 call (`from_seq=398`, no query) would have gotten the budget message. It got a normal 567-char window instead. Not verifiable from this sandbox (unshared PID namespace — the live server process is not inspectable); consistent with the live server pre-dating `ba0df76`.
+
+**Reading (Run 4):** the outline (887 chars / 327 tokens) plus `at="end"` (6040 chars / 2077 tokens, untruncated) delivered the session's shape and end state in two opens — the agent then spent only 7 more opens on detail (tail check 355/398, targeted `query` for pending, 5-step re-walk 249 → 341, closing search). No `[truncated at` markers, no error results, no budget messages. Fewer calls (12 vs 16) and fewer tokens (10110 vs 15658) than Run 3.
+
+**Agent's final answer (seq 75, 1981 chars):** end state + pending + verdict, each claim tagged with its evidence (`[observed]` vs `[model said — verify]`): done per turn (crate + `fix_url`, the `unwrap` fix, `cargo test` 6 passed), pending (`main.rs` still a Hello-world stub, remaining `.unwrap()` in a test helper), and the verdict "Did the library save work? Yes." The turn-1 read-only recon is explicitly marked **unverified** (the agent did not read that window) — so the answer is complete for resuming, with less recon detail than Run 2/3's full per-turn walk. Note: the answer self-reports "~5 library calls"; the log records 12 (2 searches + 10 opens).
+
+**Summary (Runs 1–4):**
 
 | run | calls | tokens | reached end state? | answer quality |
 |-----|------:|-------:|:------------------:|----------------|
 | Run 1 | 4 | 3028 | no | partial |
 | Run 2 | 22 | 17347 | yes | complete |
 | Run 3 | 16 | 15658 | yes | complete (same as run 2) |
+| Run 4 | 12 | 10110 | yes | complete for resuming (end state + pending, less recon detail) |
 
-**tools/list schema tokens per request:** Run 1: 250 · Run 2: 348 · Run 3: **307** (measured with `src/measure_tokens.py measure`: `json.dumps({"tools": L.TOOLS})` = 1221 chars → 307 tokens).
+**tools/list schema tokens per request:** Run 1: 250 · Run 2: 348 · Run 3: **307** · Run 4: **320** (measured with `src/measure_tokens.py measure`: `json.dumps({"tools": L.TOOLS})` = 1259 chars → 320 tokens).
