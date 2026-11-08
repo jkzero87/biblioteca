@@ -58,6 +58,14 @@ OUTLINE_CHAR_CAP = 940  # incl. next: trailer; worst outline over 5 largest sess
 OUTCOME_CHARS = 60
 OUTCOME_KEYWORDS = ("passed", "failed", "error", "ok", "finished",
                     "warning", "created", "committed")
+# Per-session read budget (phase 4 fix 2 step 3): library_open serves at
+# most BUDGET_TOKENS (estimated as chars/2.5) within a BUDGET_WINDOW_S
+# window from the first serve for that session. from_seq calls without a
+# query are refused once the budget is spent; outline, at="end" and query
+# calls are always allowed but still count toward it.
+BUDGET_TOKENS = 4000
+BUDGET_WINDOW_S = 30 * 60
+_BUDGET = {}  # sid -> [first_serve_epoch, tokens_served_estimate]
 
 SERVER_VERSION = "0.1.0"
 SUPPORTED_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
@@ -90,9 +98,9 @@ TOOLS = [
     {
         "name": "library_open",
         "description": (
-            "Open a past session. No args = outline (~300 tok): landmarks "
-            "with seq. Then from_seq=<seq> for detail, or at='end' for how "
-            "it ended."
+            "Open a past session. No args = outline (~300 tok). "
+            "from_seq=<seq> for detail; at='end' for how it ended. "
+            "from_seq without query stops after ~4000 tokens served in 30 min."
         ),
         "inputSchema": {
             "type": "object",
@@ -557,6 +565,37 @@ def _trailer_line(events, first_unshown_idx, sid):
     return "next: from_seq=%s (%d events left, ~%d tokens)" % (seq, m, t)
 
 
+def _budget_check(sid):
+    """(spent, tokens_served_int, minutes_elapsed) for the in-memory
+    per-session budget; the budget resets once the 30-min window from the
+    first serve has elapsed (phase 4 fix 2 step 3)."""
+    rec = _BUDGET.get(sid)
+    if rec is None:
+        return False, 0, 0
+    now = time.time()
+    if now - rec[0] > BUDGET_WINDOW_S:
+        del _BUDGET[sid]
+        return False, 0, 0
+    return rec[1] >= BUDGET_TOKENS, int(rec[1]), int((now - rec[0]) // 60)
+
+
+def _budget_add(sid, text):
+    """Count len(text)/2.5 tokens toward the session budget, opening a
+    fresh 30-min window when the previous one has elapsed."""
+    now = time.time()
+    rec = _BUDGET.get(sid)
+    if rec is None or now - rec[0] > BUDGET_WINDOW_S:
+        _BUDGET[sid] = [now, len(text) / 2.5]
+    else:
+        rec[1] += len(text) / 2.5
+
+
+def _serve(sid, text):
+    """Record served text against the session budget and return it."""
+    _budget_add(sid, text)
+    return tool_ok(text)
+
+
 def library_open(db, sid, query, cache, from_seq=None, at=None):
     con = db.con()
     row = con.execute(
@@ -632,11 +671,14 @@ def library_open(db, sid, query, cache, from_seq=None, at=None):
                 total += len(new) - len(line)
                 lines[pos[i]] = new
         out = lines + ([trailer] if trailer else [])
-        return tool_ok("\n".join(out) + "\n")
+        return _serve(sid, "\n".join(out) + "\n")
 
     # --- from_seq: start the window at the first event with seq >= from_seq
     # and go forward (no anchor search).
     if from_seq is not None:
+        spent, served, mins = _budget_check(sid)
+        if spent and not query:
+            return tool_ok("Budget for this session reached (~%d tokens served in %d min). Answer with what you have, or call library_open with id and query=<what you need> for one targeted window." % (served, mins))
         start = None
         for i, e in enumerate(events):
             if e.get("seq") is not None and e["seq"] >= from_seq:
@@ -658,13 +700,13 @@ def library_open(db, sid, query, cache, from_seq=None, at=None):
         trailer = _trailer_line(events, last_shown + 1, sid)
         if trailer is not None:
             out.append(trailer)
-        return tool_ok("\n".join(out) + "\n")
+        return _serve(sid, "\n".join(out) + "\n")
 
     # --- default (no query, no from_seq, no at): coarse outline (phase 4
     # fix step 2) — card header plus one line per landmark event, so the
     # caller can jump to detail with from_seq=<seq>
     if query is None or query == "":
-        return tool_ok("\n".join(_outline_text(events, header, OUTLINE_CHAR_CAP, sid)) + "\n")
+        return _serve(sid, "\n".join(_outline_text(events, header, OUTLINE_CHAR_CAP, sid)) + "\n")
 
     # --- anchor search: a query narrows the window to the highest-class
     # matching event
@@ -698,7 +740,7 @@ def library_open(db, sid, query, cache, from_seq=None, at=None):
     trailer = _trailer_line(events, last_shown + 1, sid)
     if trailer is not None:
         out.append(trailer)
-    return tool_ok("\n".join(out) + "\n")
+    return _serve(sid, "\n".join(out) + "\n")
 
 
 # ---------------------------------------------------------------- dispatch
