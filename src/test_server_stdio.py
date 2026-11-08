@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""Phase 4, step 2: stdio test of src/library_server.py.
+"""Phase 4 fix step 5: stdio test of src/library_server.py.
 
 Spawns the server and, over stdio:
   (a) sends server/discover FIRST and checks a -32601 error comes back <1 s;
   (b) initializes with protocolVersion "2025-11-25" + notifications/initialized;
   (c) tools/list;
-  (d) library_search and library_open with a real query from the Phase 3 list
-      (data/phase3_queries.json), not a biblioteca session;
-  (e) library_open from_seq=<n>, continuing from (d)'s next: trailer (or,
-      when (d) was not truncated, from its first block's seq);
+  (c2) library_search with a real query from the Phase 3 list
+       (data/phase3_queries.json), not a biblioteca session;
+  (d) library_open on session-c5f86181 with no query -> coarse outline
+       (landmark lines with seq, omitted note, next: trailer);
+  (e) library_open from_seq=<landmark seq> from (d) -> detail window;
   (f) library_open at="end".
-Prints each response truncated to 300 chars and the elapsed ms.
+Prints each response truncated to 300 chars, the elapsed ms, and the
+response token count (POST 127.0.0.1:8092/tokenize).
 
 Stdlib only; the db is opened by the server (which records access for the
 returned [card] hits, as it must).
@@ -21,9 +23,22 @@ import re
 import subprocess
 import sys
 import time
+import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 QUERY = "adb"  # from data/phase3_queries.json (Phase 3 list), dsh-scratch
+SID = "session-c5f86181-d002-4a54-b7a1-7d647da9c2e4"
+TOKENIZE_URL = "http://127.0.0.1:8092/tokenize"
+TRAILER_RE = re.compile(r"^next: from_seq=(\d+) \((\d+) events left, ~(\d+) tokens\)$")
+LANDMARK_RE = re.compile(r"^\[(\d+)\] \[(?:user|observed)\] ")
+
+
+def tokenize(text):
+    body = json.dumps({"content": text}).encode("utf-8")
+    req = urllib.request.Request(TOKENIZE_URL, data=body,
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        return len(json.load(r)["tokens"])
 
 
 def main():
@@ -55,8 +70,12 @@ def main():
 
     def show(label, msg, ms):
         text = json.dumps(msg, ensure_ascii=False)
-        print("%-22s %8.1f ms  %s%s" % (label, ms, text[:300],
+        print("%-26s %8.1f ms  %s%s" % (label, ms, text[:300],
                                         " …" if len(text) > 300 else ""))
+
+    def show_tokens(label, res):
+        t = res["content"][0]["text"]
+        print("  %-24s tokens: %d (%d chars)" % (label, tokenize(t), len(t)))
 
     # (a) probe first: clients that probe server/discover must get -32601 at once
     msg, ms = call("server/discover", mid=0)
@@ -87,39 +106,51 @@ def main():
         assert len(t["description"]) <= 200
     print("  OK: %s, descriptions <= 200 chars" % names)
 
-    # (d) real Phase 3 query, not a biblioteca session
+    # (c2) real Phase 3 query, not a biblioteca session
     msg, ms = call("tools/call", mid=3, params={
         "name": "library_search",
         "arguments": {"query": QUERY},
     })
-    show("(d) library_search %r" % QUERY, msg, ms)
+    show("(c2) library_search %r" % QUERY, msg, ms)
     res = msg["result"]
-    assert res["isError"] is False
+    assert res["isError"] is False, res
     first = res["content"][0]["text"].splitlines()[0]
-    sid = first.split()[1]
-    assert "biblioteca" not in sid, sid
+    sid0 = first.split()[1]
+    assert "biblioteca" not in sid0, sid0
+    show_tokens("(c2) search response", res)
 
+    # (d) no query, no from_seq, no at -> coarse outline
     msg, ms = call("tools/call", mid=4, params={
         "name": "library_open",
-        "arguments": {"id": sid},
+        "arguments": {"id": SID},
     })
-    show("(d) library_open %s" % sid, msg, ms)
+    show("(d) library_open %s (outline)" % SID, msg, ms)
     res = msg["result"]
-    assert res["isError"] is False
-    print("  OK: opened %s (search anchor from first [card] hit)" % sid)
-
-    # (e) from_seq follow-up: continue from the (d) open's next: trailer
-    # (or, if that open was not truncated, from its first block's seq)
+    assert res["isError"] is False, res
     text = res["content"][0]["text"]
     lines = text.rstrip("\n").split("\n")
-    m = re.match(r"^next: from_seq=(\d+)$", lines[-1])
-    if m:
-        n, origin = int(m.group(1)), "trailer"
-    else:
-        n, origin = int(lines[1][1:lines[1].index("]")]), "first block seq"
+    assert lines[0].startswith("[card] %s " % SID), lines[0]
+    landmark_seqs = [int(m.group(1)) for l in lines[1:]
+                     for m in [LANDMARK_RE.match(l)] if m]
+    assert landmark_seqs and landmark_seqs == sorted(landmark_seqs), landmark_seqs
+    n_user = sum(1 for l in lines if re.match(r"^\[\d+\] \[user\] ", l))
+    assert n_user >= 2, "outline must keep the first/last user messages"
+    n_obs = sum(1 for l in lines if re.match(r"^\[\d+\] \[observed\] ", l))
+    print("  landmarks: %d user, %d observed" % (n_user, n_obs))
+    assert any(l.startswith("[omitted ") for l in lines), "no omitted note"
+    m = TRAILER_RE.match(lines[-1])
+    assert m, "no next: trailer on outline, got %r" % lines[-1]
+    n_outline = int(m.group(1))
+    assert n_outline not in landmark_seqs, "trailer seq must be an omitted landmark"
+    show_tokens("(d) outline", res)
+    print("  OK: outline, %d landmarks, trailer from_seq=%s (%s events left, ~%s tokens)"
+          % (len(landmark_seqs), n_outline, m.group(2), m.group(3)))
+
+    # (e) from_seq jump to a landmark seq from (d)
+    n = landmark_seqs[0]
     msg, ms = call("tools/call", mid=5, params={
         "name": "library_open",
-        "arguments": {"id": sid, "from_seq": n},
+        "arguments": {"id": SID, "from_seq": n},
     })
     res = msg["result"]
     assert res["isError"] is False, res
@@ -127,17 +158,18 @@ def main():
     l2 = t2.rstrip("\n").split("\n")
     first = int(l2[1][1:l2[1].index("]")])
     assert first >= n, "window must start at seq >= %d, got %d" % (n, first)
-    m2 = re.match(r"^next: from_seq=(\d+)$", l2[-1])
+    m2 = TRAILER_RE.match(l2[-1])
     if m2:
         assert int(m2.group(1)) > first, "trailer must point past the start"
-    print("  OK: from_seq=%d (from %s) -> first shown seq %d, trailer %s, %.1f ms"
-          % (n, origin, first, m2.group(1) if m2 else "none", ms))
+    show_tokens("(e) from_seq window", res)
+    print("  OK: from_seq=%d (landmark) -> first shown seq %d, trailer %s, %.1f ms"
+          % (n, first, m2.group(0) if m2 else "none", ms))
 
     # (f) at="end": window ends at the last event and always includes the last
     # user message and the last non-empty assistant text
     msg, ms = call("tools/call", mid=6, params={
         "name": "library_open",
-        "arguments": {"id": sid, "at": "end"},
+        "arguments": {"id": SID, "at": "end"},
     })
     res = msg["result"]
     assert res["isError"] is False, res
@@ -147,7 +179,8 @@ def main():
     has_assist = any(re.match(r"^\[\d+\] \[model said", l) for l in l3)
     assert has_user, "at=end must include the last [user] message"
     assert has_assist, "at=end must include the last [model said] text"
-    trailer = re.match(r"^next: from_seq=\d+$", l3[-1])
+    trailer = TRAILER_RE.match(l3[-1])
+    show_tokens("(f) at=end window", res)
     print("  OK: at=end includes last [user] and [model said] blocks; "
           "front trailer %s, %.1f ms" % ("yes" if trailer else "no", ms))
 
