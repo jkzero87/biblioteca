@@ -51,6 +51,13 @@ OPEN_CHAR_CAP = 3350     # worst library_open output <= 1500 tokens
 # OUTLINE_LINE_CHARS.
 OUTLINE_LINE_CHARS = 100
 OUTLINE_CHAR_CAP = 940  # incl. next: trailer; worst outline over 5 largest sessions = 333 tokens <= 350
+# Landmark outcome (phase 4 fix 2 step 2): appended after " -> " to each
+# tool-call landmark line - "error" if isError, else the first non-empty
+# result line containing a digit or an outcome keyword, clipped to
+# OUTCOME_CHARS; nothing if no line qualifies.
+OUTCOME_CHARS = 60
+OUTCOME_KEYWORDS = ("passed", "failed", "error", "ok", "finished",
+                    "warning", "created", "committed")
 
 SERVER_VERSION = "0.1.0"
 SUPPORTED_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
@@ -413,10 +420,29 @@ def render_event(e):
     return out
 
 
+def _outcome(result):
+    """Outcome text for a tool-call landmark line (phase 4 fix 2 step 2):
+    the first non-empty result line containing a digit or one of
+    OUTCOME_KEYWORDS (case-insensitive), clipped to OUTCOME_CHARS; None
+    when no line qualifies. Callers use "error" directly for isError."""
+    if not result:
+        return None
+    for line in result.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        low = line.lower()
+        if any(ch.isdigit() for ch in line) or any(k in low for k in OUTCOME_KEYWORDS):
+            return line[:OUTCOME_CHARS]
+    return None
+
+
 def _outline_landmarks(events):
     """Landmark events in session order: user messages and tool calls of
     class write/commit/error. Returns (event, tag, text) with the line text
-    clipped to OUTLINE_LINE_CHARS (phase 4 fix step 2)."""
+    clipped to OUTLINE_LINE_CHARS. Tool-call lines carry the outcome after
+    " -> " (phase 4 fix 2 step 2); the cmd is what gets clipped, never the
+    outcome."""
     out = []
     for e in events:
         if e["kind"] == "user":
@@ -424,9 +450,13 @@ def _outline_landmarks(events):
         elif e["kind"] == "tool":
             cls = event_class(e)
             if cls in ("write", "commit", "error"):
-                out.append((e, "observed",
-                            clip("%s [%s]: %s" % (e["name"], cls, e["cmd"]),
-                                 OUTLINE_LINE_CHARS)))
+                base = "%s [%s]: %s" % (e["name"], cls, e["cmd"])
+                out_txt = "error" if e["is_error"] else _outcome(e.get("result") or "")
+                if out_txt:
+                    room = max(10, OUTLINE_LINE_CHARS - 3 - len(out_txt))
+                    out.append((e, "observed", clip(base, room) + " \u2192 " + out_txt))
+                else:
+                    out.append((e, "observed", clip(base, OUTLINE_LINE_CHARS)))
     return out
 
 
