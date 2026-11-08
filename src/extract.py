@@ -265,7 +265,7 @@ def is_retrieval(cmd):
 CLASS_NAMES = ("error", "commit", "write", "read")
 
 
-def extract_card(path):
+def extract_card(path, lines=None):
     card = {
         "id": None,
         "source": path,
@@ -294,7 +294,9 @@ def extract_card(path):
     n_retrieval = 0           # bash calls that only search (never evidence)
     min_t = max_t = None
     bad_lines = 0
-    for line in iter_lines(path):
+    if lines is None:
+        lines = iter_lines(path)
+    for line in lines:
         try:
             ev = json.loads(line)
         except Exception:

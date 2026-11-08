@@ -114,6 +114,100 @@ def carry_access(db_path):
     return out
 
 
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS cards (
+    id TEXT PRIMARY KEY,
+    source TEXT,
+    start TEXT,
+    end TEXT,
+    cwd TEXT,
+    first_message TEXT,
+    files TEXT,
+    bash_commands TEXT,
+    familiar_terms TEXT,
+    familiar_classes TEXT,
+    tool_call_count INTEGER,
+    error_count INTEGER,
+    commit_hashes TEXT,
+    n_writes INTEGER,
+    n_commits INTEGER,
+    n_new_files INTEGER,
+    n_retrieval INTEGER,
+    command_classes TEXT,
+    file_classes TEXT,
+    project TEXT,
+    last_accessed TEXT,
+    access_count INTEGER,
+    source_map TEXT
+);
+-- recollection: curated, capped display fields
+CREATE VIRTUAL TABLE IF NOT EXISTS cards_fts USING fts5(
+    id, first_message, files_text, commands_text, tokenize='unicode61'
+);
+-- familiarity: lossless per-session term list
+CREATE VIRTUAL TABLE IF NOT EXISTS familiar_fts USING fts5(
+    id, terms_text, tokenize='unicode61'
+);
+"""
+
+
+def create_schema(con):
+    """Create the library tables if missing (phase 5: the db now survives
+    refreshes, so the schema must be idempotent)."""
+    con.executescript(SCHEMA)
+
+
+def insert_card(con, c, project, la, ac):
+    """Insert one card row plus its two FTS rows.
+
+    Harness text is never indexed as user text (extract.HARNESS_PREFIXES):
+    such first_message values are stored in cards but empty in cards_fts.
+    """
+    con.execute(
+        "INSERT INTO cards VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            c["id"],
+            c["source"],
+            c.get("start"),
+            c.get("end"),
+            c.get("cwd"),
+            c.get("first_message"),
+            json.dumps(c.get("files_touched", [])),
+            json.dumps(c.get("bash_commands", [])),
+            json.dumps(c.get("familiar_terms", [])),
+            json.dumps(c.get("familiar_classes", [])),
+            c.get("tool_call_count", 0),
+            c.get("error_count", 0),
+            json.dumps(c.get("commit_hashes", [])),
+            c.get("n_writes", 0),
+            c.get("n_commits", 0),
+            c.get("n_new_files", 0),
+            c.get("n_retrieval", 0),
+            json.dumps(c.get("command_classes", [])),
+            json.dumps(c.get("file_classes", [])),
+            project,
+            la,
+            ac,
+            json.dumps(c.get("source_map", {})),
+        ),
+    )
+    fm = c.get("first_message")
+    fm_fts = "" if extract.starts_with_harness_prefix(fm) else (fm or "")
+    con.execute(
+        "INSERT INTO cards_fts VALUES (?,?,?,?)",
+        (
+            c["id"],
+            fm_fts,
+            " ".join(c.get("files_touched", [])),
+            "\n".join(c.get("bash_commands", [])),
+        ),
+    )
+    con.execute(
+        "INSERT INTO familiar_fts VALUES (?,?)",
+        (c["id"], " ".join(c.get("familiar_terms", []))),
+    )
+
+
 def main():
     base = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
     cards_path = os.path.join(base, "cards.jsonl")
@@ -141,92 +235,13 @@ def main():
     if os.path.exists(db_path):
         os.remove(db_path)
     con = sqlite3.connect(tmp)
-    con.executescript(
-        """
-        CREATE TABLE cards (
-            id TEXT PRIMARY KEY,
-            source TEXT,
-            start TEXT,
-            end TEXT,
-            cwd TEXT,
-            first_message TEXT,
-            files TEXT,
-            bash_commands TEXT,
-            familiar_terms TEXT,
-            familiar_classes TEXT,
-            tool_call_count INTEGER,
-            error_count INTEGER,
-            commit_hashes TEXT,
-            n_writes INTEGER,
-            n_commits INTEGER,
-            n_new_files INTEGER,
-            n_retrieval INTEGER,
-            command_classes TEXT,
-            file_classes TEXT,
-            project TEXT,
-            last_accessed TEXT,
-            access_count INTEGER,
-            source_map TEXT
-        );
-        -- recollection: curated, capped display fields
-        CREATE VIRTUAL TABLE cards_fts USING fts5(
-            id, first_message, files_text, commands_text, tokenize='unicode61'
-        );
-        -- familiarity: lossless per-session term list
-        CREATE VIRTUAL TABLE familiar_fts USING fts5(
-            id, terms_text, tokenize='unicode61'
-        );
-        """
-    )
+    create_schema(con)
     project_counts = {}
     for c in cards:
         project = assign_project(c.get("cwd"), c.get("files_touched", []), repos)
         project_counts[project] = project_counts.get(project, 0) + 1
         la, ac = carry.get(c["id"], (None, 0))
-        con.execute(
-            "INSERT INTO cards VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                c["id"],
-                c["source"],
-                c.get("start"),
-                c.get("end"),
-                c.get("cwd"),
-                c.get("first_message"),
-                json.dumps(c.get("files_touched", [])),
-                json.dumps(c.get("bash_commands", [])),
-                json.dumps(c.get("familiar_terms", [])),
-                json.dumps(c.get("familiar_classes", [])),
-                c.get("tool_call_count", 0),
-                c.get("error_count", 0),
-                json.dumps(c.get("commit_hashes", [])),
-                c.get("n_writes", 0),
-                c.get("n_commits", 0),
-                c.get("n_new_files", 0),
-                c.get("n_retrieval", 0),
-                json.dumps(c.get("command_classes", [])),
-                json.dumps(c.get("file_classes", [])),
-                project,
-                la,
-                ac,
-                json.dumps(c.get("source_map", {})),
-            ),
-        )
-        # harness text is never indexed as user text (extract.HARNESS_PREFIXES)
-        fm = c.get("first_message")
-        fm_fts = "" if extract.starts_with_harness_prefix(fm) else (fm or "")
-        con.execute(
-            "INSERT INTO cards_fts VALUES (?,?,?,?)",
-            (
-                c["id"],
-                fm_fts,
-                " ".join(c.get("files_touched", [])),
-                "\n".join(c.get("bash_commands", [])),
-            ),
-        )
-        con.execute(
-            "INSERT INTO familiar_fts VALUES (?,?)",
-            (c["id"], " ".join(c.get("familiar_terms", []))),
-        )
+        insert_card(con, c, project, la, ac)
     con.commit()
     con.close()
     os.replace(tmp, db_path)
