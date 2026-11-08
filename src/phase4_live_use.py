@@ -18,6 +18,7 @@ Logs are opened read-only. Only network call: POST /tokenize.
 import json
 import os
 import subprocess
+import sys
 import urllib.request
 
 sys_path_dir = os.path.dirname(os.path.abspath(__file__))
@@ -97,6 +98,8 @@ def end_of(evs):
 
 def main():
     import datetime
+    # optional arg: measure that specific session id instead of the newest
+    want_sid = sys.argv[1] if len(sys.argv) > 1 else None
     candidates = []  # (end_ms, path, n_calls)
     empty_vis, empty_cur = 0, 0
     empty_vis_blocktypes = {}
@@ -135,7 +138,14 @@ def main():
     if not candidates:
         raise SystemExit("no candidate session found")
 
-    end, path, n = candidates[0]
+    if want_sid:
+        match = [c for c in candidates
+                 if os.path.basename(os.path.dirname(c[1])) == want_sid]
+        if not match:
+            raise SystemExit("session not found among candidates: %s" % want_sid)
+        end, path, n = match[0]
+    else:
+        end, path, n = candidates[0]
     sid = os.path.basename(os.path.dirname(path))
     evs = scan(path)
     import datetime
@@ -169,11 +179,12 @@ def main():
         res = results.get(str(cid), "")
         toks = tokenize(res)
         trunc = "[truncated at" in res
+        budget = res.startswith("Budget for this session reached")
         total_chars += len(res)
         total_toks += toks
-        print("seq=%s name=%s args=%s result_chars=%d result_tokens=%d truncated=%s"
+        print("seq=%s name=%s args=%s result_chars=%d result_tokens=%d truncated=%s budget_msg=%s"
               % (e.get("seq"), d.get("name"), json.dumps(args, ensure_ascii=False),
-                 len(res), toks, trunc))
+                 len(res), toks, trunc, budget))
     print("TOTALS: calls=%d result_chars=%d result_tokens=%d"
           % (n, total_chars, total_toks))
 

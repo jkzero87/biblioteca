@@ -145,13 +145,72 @@ Same script (`src/phase4_live_use.py`), this session excluded. 6 sessions now ha
 
 **Agent's final answer (seq 75, 1981 chars):** end state + pending + verdict, each claim tagged with its evidence (`[observed]` vs `[model said — verify]`): done per turn (crate + `fix_url`, the `unwrap` fix, `cargo test` 6 passed), pending (`main.rs` still a Hello-world stub, remaining `.unwrap()` in a test helper), and the verdict "Did the library save work? Yes." The turn-1 read-only recon is explicitly marked **unverified** (the agent did not read that window) — so the answer is complete for resuming, with less recon detail than Run 2/3's full per-turn walk. Note: the answer self-reports "~5 library calls"; the log records 12 (2 searches + 10 opens).
 
-**Summary (Runs 1–4):**
+## Runs 5-6 (current code, server started 22:21:49)
 
-| run | calls | tokens | reached end state? | answer quality |
-|-----|------:|-------:|:------------------:|----------------|
-| Run 1 | 4 | 3028 | no | partial |
-| Run 2 | 22 | 17347 | yes | complete |
-| Run 3 | 16 | 15658 | yes | complete (same as run 2) |
-| Run 4 | 12 | 10110 | yes | complete for resuming (end state + pending, less recon detail) |
+Same script (`src/phase4_live_use.py`, generalized to accept a session id as an optional argument; the measurements are unchanged), this session excluded. 8 sessions now have `mcp__biblioteca__*` calls; the two most recent both started after the 2026-11-07T22:21:49 server restart (Run 5: 22:23:08, Run 6: 22:26:07 local). Both target the same session `session-c5f86181-…` under the same task as Runs 3/4: reconstruct what was done in the Rust rewrite of imgproxy (`~/rust-lab`) using only the library tools.
+
+### Run 5
+
+- id: `session-8daf0940-49ba-41a0-b4bc-029ecc02e209`
+- started 2026-11-07T22:23:08, ended 22:26:01 (local, America/Bogota)
+- context: one search, one no-arg open (outline), a `from_seq=9` head window, one `at="end"` open, a `from_seq=398` tail check, a `from_seq=29` re-walk, a `from_seq=220` call (budget message), and one targeted `query` open for the pending items.
+
+| seq | tool | args | result chars | result tokens | truncated | budget message |
+|----:|------|------|-------------:|--------------:|:---------:|:--------------:|
+| 19 | `library_search` | query=`imgproxy Rust rewrite` project=`rust-lab` | 300 | 143 | no | no |
+| 24 | `library_open` | id=`session-c5f86181-…` (no query, no at) → outline | 731 | 316 | no | no |
+| 29 | `library_open` | id=…, from_seq=9 | 3272 | 1061 | no | no |
+| 34 | `library_open` | id=…, at=`end` | 3351 | 1128 | no | no |
+| 39 | `library_open` | id=…, from_seq=398 | 567 | 228 | no | no |
+| 44 | `library_open` | id=…, from_seq=29 | 3199 | 1172 | no | no |
+| 46 | `library_open` | id=…, from_seq=220 → budget message | 170 | 41 | no | **yes** |
+| 51 | `library_open` | id=…, query=`remaining next steps pending` | 3351 | 1143 | no | no |
+
+**Totals (Run 5):** 8 calls · 14941 result chars · 5232 result tokens.
+
+**Budget (Run 5):** the seq 46 call (`from_seq=220`, no query) got the budget message. The 30-min window for `c5f86181` was fresh (Run 4's last open ended 21:47:08, >30 min earlier), and the chars served before that call (731+3272+3351+567+3199 = 11120) were 4448.0 budget tokens (chars/2.5, ≥ `BUDGET_TOKENS` = 4000) → the no-query `from_seq` was refused, while the following `query` call (seq 51) was still served (cumulative 5788.4) — same query-after-budget behavior as test (g).
+
+**Code live (Run 5):** outline result 731 chars = body 681 (≤ `OUTLINE_CHAR_CAP` 723) + 48-char `next:` trailer + final newline (the trailer is appended after the cap check; old code's outline was 887). `at="end"` result 3351 = `OPEN_CHAR_CAP` 3350 + final newline (the at=end window hit the cap exactly; old code: 6040). → **pass** (literal 731/3351 are 8/1 over the 723/3350 thresholds only by the trailer + newline the server appends after the cap check).
+
+**Answer (Run 5):** final answer (seq 55, 1760 chars): full state reconstruction (recon → scaffold → implementation → defect fix, tests green) with end state and pending; the budget-cut parts are explicitly marked as not read (turn 4's exact task text seq 221, middle of the final summary), not claimed as done; verdict "Did it save work: yes". → **complete for resuming**.
+
+**Self-report (Run 5):** no total call count in the final answer; mid-run (seq 50) it says "Budget limit hit on the second call." Real count from the log: 8 calls (1 search + 7 opens, one of them the budget message).
+
+### Run 6
+
+- id: `session-7f73858c-6801-472f-b6b2-4d7449d5232a`
+- started 2026-11-07T22:26:07, ended 22:27:34 (local, America/Bogota)
+- context: one search, one no-arg open (outline), a `from_seq=9` call (budget message), one targeted `query` open (convert.rs fix + pending), one `at="end"` open.
+
+| seq | tool | args | result chars | result tokens | truncated | budget message |
+|----:|------|------|-------------:|--------------:|:---------:|:--------------:|
+| 19 | `library_search` | query=`imgproxy Rust rewrite` project=`rust-lab` | 300 | 143 | no | no |
+| 24 | `library_open` | id=`session-c5f86181-…` (no query, no at) → outline | 731 | 316 | no | no |
+| 29 | `library_open` | id=…, from_seq=9 → budget message | 170 | 41 | no | **yes** |
+| 34 | `library_open` | id=…, query=`convert.rs fix and what was left pending` | 3238 | 1057 | no | no |
+| 39 | `library_open` | id=…, at=`end` | 3351 | 1128 | no | no |
+
+**Totals (Run 6):** 5 calls · 7790 result chars · 2685 result tokens.
+
+**Budget (Run 6):** the seq 29 call (`from_seq=9`, no query) got the budget message on its second call — the budget is per opened session, and `c5f86181` had already accumulated 5788.4 budget tokens (chars/2.5) from Run 5 within the same 30-min window (including the post-budget query); Run 6's outline added 292.4 → 6080.8. The `query` (seq 34) and `at="end"` (seq 39) calls were still served (cumulative 8716.4 by the end of the run).
+
+**Code live (Run 6):** same as Run 5 — outline 731 (body ≤ 723 + 48-char trailer + newline), `at="end"` 3351 (3350 + newline). → **pass**.
+
+**Answer (Run 6):** final answer (seq 43, 1321 chars): task scope, exact edits, test outcome, end state; the mid-session recon (turns 1–4) is explicitly marked as unread because the budget capped the windows; verdict "Did it save work? Yes". → **complete for resuming**.
+
+**Self-report (Run 6):** the final answer says "only the outline and two targeted windows were served" (= 3 opens served; the search is not counted). Real count from the log: 5 calls (1 search + 4 opens, one of them the budget message).
+
+**Summary (Runs 1–6):**
+
+| run | calls | tokens | budget hit? | reached end state? | answer quality |
+|-----|------:|-------:|:-----------:|:------------------:|----------------|
+| Run 1 | 4 | 3028 | - | no | partial |
+| Run 2 | 22 | 17347 | - | yes | complete |
+| Run 3 | 16 | 15658 | - | yes | complete (same as run 2) |
+| Run 4 | 12 | 10110 | no (old code live) | yes | complete for resuming (end state + pending, less recon detail) |
+| Run 5 | 8 | 5232 | yes (seq 46) | yes | complete for resuming |
+| Run 6 | 5 | 2685 | yes (seq 29; carried from Run 5) | yes | complete for resuming |
+
+**Run 4 is invalid: server still on 19:59 code** — its "no budget hit" and caps were measured against the pre-22:21:49 server, so only Runs 5–6 exercise the current code.
 
 **tools/list schema tokens per request:** Run 1: 250 · Run 2: 348 · Run 3: **307** · Run 4: **320** (measured with `src/measure_tokens.py measure`: `json.dumps({"tools": L.TOOLS})` = 1259 chars → 320 tokens).
