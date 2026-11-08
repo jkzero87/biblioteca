@@ -72,3 +72,7 @@ Why: in Run 2 the agent paged a whole session linearly (22 calls, 17,347 tokens,
 ## 2026-11-07 — Budget per opened session; outline carries outcomes
 Linear paging without a query stops after ~4000 tokens served from one session in 30 minutes; targeted (query) opens remain allowed. Outline lines show each landmark's outcome. at="end" respects the cap.
 Why: Run 3 used outline and at=end, then still walked the session linearly (16 calls, 15,658 tokens); the tool description alone did not stop it. Agent-tool guidance recommends default limits and truncation messages that steer to narrower requests; an event's central details (here, a command's outcome) carry its storyline. The agent also misreported its own calls (said 6 opens, log shows 15): runs are measured from logs only.
+
+## 2026-11-07 — Outline: user turns first, harness text is not the user, tests are landmarks
+Outline priority: the last 3 user messages, then the first one, then tool landmarks by class (error > commit > test > write), in session order, until the cap. Messages starting with "<system-reminder>" are harness text, never shown as [user]. A test run (cargo test, pytest, npm test, go test, make test, unittest) is a landmark of class test, with its pass/fail line as outcome.
+Why: the outline of c5f86181 dropped the last 4 user turns (the end state), showed a system-reminder as [user], and omitted "6 passed". The hippocampus is sensitive to prediction error; a test run is a direct check of expectation against reality.
