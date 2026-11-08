@@ -176,7 +176,6 @@ def main():
         end, path, n = candidates[0]
     sid = os.path.basename(os.path.dirname(path))
     evs = scan(path)
-    import datetime
     print("== selected: %s end=%s calls=%d"
           % (sid, datetime.datetime.fromtimestamp(end / 1000).isoformat(), n))
 
