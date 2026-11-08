@@ -20,6 +20,7 @@ Wiring:
 import collections
 import datetime
 import json
+import math
 import os
 import sqlite3
 import subprocess
@@ -31,6 +32,11 @@ import search
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(ROOT, "data", "library.db")
+# Per-session rendered chars/token (data/char_ratio.json, built by
+# src/measure_char_ratio.py). Read on every library_open call so edits take
+# effect without a restart; fallback when the file or the id is missing.
+CHAR_RATIO_PATH = os.path.join(ROOT, "data", "char_ratio.json")
+CHAR_RATIO_FALLBACK = 2.5
 
 # Token budget, measured in Phase 4 step 3 against llama-server /tokenize
 # (5 real Phase 3 queries): worst search was 1350 chars / 702 tokens, worst
@@ -44,7 +50,7 @@ OPEN_CHAR_CAP = 3350     # worst library_open output <= 1500 tokens
 # sessions stays <= 350 tokens; each landmark line's text is clipped to
 # OUTLINE_LINE_CHARS.
 OUTLINE_LINE_CHARS = 100
-OUTLINE_CHAR_CAP = 950  # worst outline over 5 largest sessions = 343 tokens <= 350
+OUTLINE_CHAR_CAP = 940  # incl. next: trailer; worst outline over 5 largest sessions = 333 tokens <= 350
 
 SERVER_VERSION = "0.1.0"
 SUPPORTED_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
@@ -426,7 +432,7 @@ def _outline_landmarks(events):
     return out
 
 
-def _outline_text(events, header, cap):
+def _outline_text(events, header, cap, sid):
     """Coarse-to-fine outline: header + one line per landmark, session
     order. When the full list exceeds cap: keep the first 3 and last 3
     user messages, then fill with the highest-class tool landmarks
@@ -483,17 +489,44 @@ def _outline_text(events, header, cap):
     out = [header] + [lines[i] for i in kept_idx]
     if note:
         out.append(note)
+    # trailer: jump to the first omitted landmark in session order
+    kept_set = set(kept_idx)
+    for i in range(len(lands)):
+        if i not in kept_set:
+            trailer = _trailer_line(events, i, sid)
+            if trailer is not None:
+                out.append(trailer)
+            break
     return out
 
 
-def _trailer_line(events, first_unshown_idx):
-    """Exact last line when the window is cut: next: from_seq=<n>."""
+def _char_ratio(sid):
+    """Rendered chars/token for sid from data/char_ratio.json; fallback 2.5."""
+    try:
+        with open(CHAR_RATIO_PATH) as f:
+            r = json.load(f).get(sid)
+    except (OSError, ValueError):
+        r = None
+    if isinstance(r, (int, float)) and not isinstance(r, bool) and r > 0:
+        return float(r)
+    return CHAR_RATIO_FALLBACK
+
+
+def _trailer_line(events, first_unshown_idx, sid):
+    """Exact last line when the window is cut:
+    next: from_seq=<n> (<m> events left, ~<t> tokens).
+    m = events from first_unshown_idx to the end; t = their full rendered
+    chars / the session's measured chars-per-token (fallback 2.5)."""
     if first_unshown_idx is None or first_unshown_idx >= len(events):
         return None
     seq = events[first_unshown_idx].get("seq")
     if seq is None:
         return None
-    return "next: from_seq=%s" % seq
+    m = len(events) - first_unshown_idx
+    chars = len("\n".join(
+        l for e in events[first_unshown_idx:] for l in render_event(e)))
+    t = int(math.ceil(chars / _char_ratio(sid)))
+    return "next: from_seq=%s (%d events left, ~%d tokens)" % (seq, m, t)
 
 
 def library_open(db, sid, query, cache, from_seq=None, at=None):
@@ -551,7 +584,7 @@ def library_open(db, sid, query, cache, from_seq=None, at=None):
         out = all_lines[starts[s]:]
         if s > 0:
             # the cut-off prefix is events[0:s]; first unshown event is events[0]
-            out.append(_trailer_line(events, 0))
+            out.append(_trailer_line(events, 0, sid))
         return tool_ok("\n".join(out) + "\n")
 
     # --- from_seq: start the window at the first event with seq >= from_seq
@@ -575,7 +608,7 @@ def library_open(db, sid, query, cache, from_seq=None, at=None):
                 break
             out += block
             last_shown = i
-        trailer = _trailer_line(events, last_shown + 1)
+        trailer = _trailer_line(events, last_shown + 1, sid)
         if trailer is not None:
             out.append(trailer)
         return tool_ok("\n".join(out) + "\n")
@@ -584,7 +617,7 @@ def library_open(db, sid, query, cache, from_seq=None, at=None):
     # fix step 2) — card header plus one line per landmark event, so the
     # caller can jump to detail with from_seq=<seq>
     if query is None or query == "":
-        return tool_ok("\n".join(_outline_text(events, header, OUTLINE_CHAR_CAP)) + "\n")
+        return tool_ok("\n".join(_outline_text(events, header, OUTLINE_CHAR_CAP, sid)) + "\n")
 
     # --- anchor search: a query narrows the window to the highest-class
     # matching event
@@ -615,7 +648,7 @@ def library_open(db, sid, query, cache, from_seq=None, at=None):
             break
         out += block
         last_shown = i
-    trailer = _trailer_line(events, last_shown + 1)
+    trailer = _trailer_line(events, last_shown + 1, sid)
     if trailer is not None:
         out.append(trailer)
     return tool_ok("\n".join(out) + "\n")

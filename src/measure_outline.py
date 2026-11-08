@@ -70,7 +70,7 @@ def worst_at(tops, cap):
     """(worst_tokens, per-session [(sid, chars, tokens)]) at this cap."""
     worst, detail = 0, []
     for _, sid, header, events in tops:
-        text = "\n".join(L._outline_text(events, header, cap))
+        text = "\n".join(L._outline_text(events, header, cap, sid))
         toks = tokenize(text)
         worst = max(worst, toks)
         detail.append((sid, len(text), toks))
