@@ -29,6 +29,7 @@ import sys
 import time
 
 import extract
+import refresh
 import search
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -192,6 +193,12 @@ class Db:
 def library_search(db, query, project):
     """Same two-level logic as src/search.py main(); records access only for
     the returned [card] hits (the server is the --touch consumer)."""
+    # Phase 5: the index is fresh when the search runs; a refresh failure
+    # must never fail the search (log it and search the stale index).
+    try:
+        refresh.refresh(DB_PATH)
+    except Exception as exc:
+        log("refresh failed, searching stale index: %s" % exc)
     words = query.split()
     if not words:
         return tool_error("empty query")
@@ -907,6 +914,12 @@ def _write_server_status():
 
 
 def main():
+    # Phase 5: refresh once at startup (a search right after boot sees a
+    # fresh index even if no search-triggered refresh has run yet).
+    try:
+        refresh.refresh(DB_PATH)
+    except Exception as exc:
+        log("refresh failed at startup: %s" % exc)
     _write_server_status()
     db = Db(DB_PATH)
     cache = collections.OrderedDict()
