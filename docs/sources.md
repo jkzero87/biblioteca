@@ -11,7 +11,7 @@
 - Tse et al. (2007), *Schemas and memory consolidation*, Science 316. https://doi.org/10.1126/science.1135935 — commentary: Squire (2007), *Rapid consolidation*.
 - Johnson, Hashtroudi & Lindsay (1993), *Source monitoring*, Psychological Bulletin 114. Johnson & Raye (1998), *False memories and confabulation*, Trends Cogn. Sci. 2.
 - Sinclair & Barense (2019), *Prediction error and memory reactivation: how incomplete reminders drive reconsolidation*, Trends Neurosci. https://pubmed.gov/31506189
-- Melega et al. (2025), *Scientific Reports* — https://ueaeprints.uea.ac.uk/101123/
+- Melega, Samson, Lee & Renoult (2025), The semantic structure of events consistently influences episodic memory recall over time, Scientific Reports (central vs peripheral details) — https://ueaeprints.uea.ac.uk/101123/
 
 ## Agent memory systems
 - Gutiérrez et al. (2024), *HippoRAG: neurobiologically inspired long-term memory for LLMs*. arXiv 2405.14831
