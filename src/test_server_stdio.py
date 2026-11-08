@@ -16,7 +16,12 @@ Spawns the server and, over stdio:
       jumps following the trailers - printing estimated tokens served
       (chars/2.5) per call and the running total, until the per-session
       budget (4000 tokens / 30 min) is reached; a query call after the
-      budget must still return content.
+      budget must still return content;
+   (h) refresh-then-search: delete SID's indexed_logs row, then call
+       library_search - the server's pre-search refresh must restore the
+       row with the log's current size/mtime; the newest log on disk
+       (this test's own session, mid-turn) must end up neither a card nor
+       an indexed row.
 Prints each response truncated to 300 chars, the elapsed ms, and the
 response token count (POST 127.0.0.1:8092/tokenize).
 
@@ -189,6 +194,72 @@ def main():
     show_tokens("(f) at=end window", res)
     print("  OK: at=end includes last [user] and [model said] blocks; "
           "front trailer %s, %.1f ms" % ("yes" if trailer else "no", ms))
+
+    # (h) refresh-then-search: delete SID's indexed_logs row, then search -
+    # the server's pre-search refresh must detect the change and restore
+    # the row with the log's current size/mtime
+    import sqlite3
+    SRC = os.path.join(ROOT, "src")
+    if SRC not in sys.path:
+        sys.path.insert(0, SRC)
+    import extract
+    DB = os.path.join(ROOT, "data", "library.db")
+    con = sqlite3.connect(DB)
+    try:
+        row = con.execute("SELECT path, size, mtime FROM indexed_logs "
+                         "WHERE session_id=?", (SID,)).fetchone()
+        assert row is not None, "SID has no indexed_logs row"
+        path_sid = row[0]
+        cur = con.execute("DELETE FROM indexed_logs WHERE session_id=?", (SID,))
+        assert cur.rowcount == 1, "deleted %r rows, expected 1" % cur.rowcount
+        con.commit()
+    finally:
+        con.close()
+    msg, ms = call("tools/call", mid=7, params={
+        "name": "library_search",
+        "arguments": {"query": QUERY},
+    })
+    show("(h) library_search after row delete", msg, ms)
+    res = msg["result"]
+    assert res["isError"] is False, res
+    show_tokens("(h) search response", res)
+    con = sqlite3.connect(DB)
+    try:
+        row = con.execute("SELECT path, size, mtime FROM indexed_logs "
+                         "WHERE session_id=?", (SID,)).fetchone()
+        assert row is not None, "refresh did not restore the row"
+        st = os.stat(path_sid)
+        assert row[0] == path_sid, row
+        assert row[1] == st.st_size, (row[1], st.st_size)
+        assert row[2] == st.st_mtime, (row[2], st.st_mtime)
+        card_ids = {r[0] for r in con.execute("SELECT id FROM cards")}
+        idx_paths = {r[0] for r in con.execute("SELECT path FROM indexed_logs")}
+    finally:
+        con.close()
+    print("  OK: refresh restored %s with current size/mtime (%d B)"
+          % (SID, st.st_size))
+    # the newest log on disk is this test's own session, mid-turn: the
+    # refresh must have skipped it (no completed turn)
+    logs = extract.find_logs(extract.DEFAULT_ROOT, [])
+    newest = max(logs, key=lambda p: os.stat(p).st_mtime_ns)
+    # read only the first line (the session event) with a bounded read:
+    # the newest log is live, so zstd -dc may never reach EOF and
+    # extract.iter_lines must not be abandoned mid-iteration (its finally
+    # waits on the still-running zstd)
+    p = subprocess.Popen(
+        ["zstd", "-dc", newest], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    first = p.stdout.readline().decode("utf-8", "replace").strip()
+    p.kill()
+    p.wait()
+    p.stdout.close()
+    p.stderr.close()
+    ev = json.loads(first)
+    sid_new = ev.get("id") if ev.get("type") == "session" else None
+    assert sid_new, "no session event in newest log"
+    assert sid_new not in card_ids, "in-progress session became a card"
+    assert newest not in idx_paths, "in-progress session got indexed"
+    print("  OK: newest log %s is neither a card nor indexed" % sid_new)
 
     # (g) budget demo on a FRESH server process: the in-memory per-session
     # budget (4000 tokens / 30 min) starts clean, so the linear walk -

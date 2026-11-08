@@ -9,7 +9,9 @@ still in progress is left out, so the session currently running is never
 indexed while it runs. The card row and its two FTS rows are replaced in one
 transaction; last_accessed/access_count are carried over from the old card.
 A session with no completed turn is skipped and NOT recorded in
-indexed_logs, so the next refresh retries it.
+indexed_logs, so the next refresh retries it. A log still being written
+(zstd stream without EOF within 10 s) is treated the same way: skipped,
+retried next refresh - so a refresh never blocks behind an active session.
 
 Stdlib only; log files are read-only (decompressed with the zstd CLI via
 extract.iter_lines). n_new_files is exact when the batch is the whole
@@ -24,7 +26,9 @@ import datetime
 import json
 import os
 import sqlite3
+import subprocess
 import sys
+import threading
 import time
 
 import build_index
@@ -44,34 +48,66 @@ INDEXED_SCHEMA = (
 )
 
 
-def _cutoff_lines(path):
+# A live session log is appended while the session runs, so zstd -dc may
+# stream for minutes: the read is bounded and a still-open stream means
+# "turn in progress" (the next refresh retries once the session goes quiet).
+ZSTD_TIMEOUT = 10.0
+
+
+def _cutoff_lines(path, timeout=ZSTD_TIMEOUT):
     """The log's lines up to and including its last completed turn.
 
     A turn is completed by a turn/end event that followed a user message
     (user/message events with any source kind). Returns None when the log
-    has no completed turn (e.g. the session is still in its first turn).
+    has no completed turn, or when the zstd stream does not reach EOF within
+    `timeout` seconds (the session is still being written): either way the
+    session is left out and the next refresh retries it.
     """
+    proc = subprocess.Popen(
+        ["zstd", "-dc", path], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
     lines = []
-    pending = False
-    last_completed = None
-    for line in extract.iter_lines(path):
-        lines.append(line)
-        try:
-            ev = json.loads(line)
-        except Exception:
-            continue
-        if not isinstance(ev, dict):
-            continue
-        et = ev.get("type")
-        if et == "user/message":
-            pending = True
-        elif et == "turn/end":
-            if pending:
-                last_completed = len(lines) - 1
-            pending = False
-    if last_completed is None:
+    state = {"pending": False, "last": None}
+
+    def consume():
+        for raw in proc.stdout:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line:
+                continue
+            lines.append(line)
+            try:
+                ev = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(ev, dict):
+                continue
+            et = ev.get("type")
+            if et == "user/message":
+                state["pending"] = True
+            elif et == "turn/end":
+                if state["pending"]:
+                    state["last"] = len(lines) - 1
+                state["pending"] = False
+
+    worker = threading.Thread(target=consume, daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        proc.kill()
+        worker.join()
+        proc.stdout.close()
+        proc.stderr.close()
         return None
-    return lines[: last_completed + 1]
+    rc = proc.wait()
+    err = proc.stderr.read().decode("utf-8", "replace").strip()[:200]
+    proc.stdout.close()
+    proc.stderr.close()
+    if rc != 0:
+        raise RuntimeError("zstd exit %d: %s" % (rc, err))
+    last = state["last"]
+    if last is None:
+        return None
+    return lines[: last + 1]
 
 
 def _path_like(term):
