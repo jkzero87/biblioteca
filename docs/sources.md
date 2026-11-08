@@ -31,3 +31,7 @@
 - dsh-mcp-client README — https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/mcp/mcp-client/README.md
 - dsh guide, third-party memory MCP servers — https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/guide/mcp-memory.md
 - Healey, Long & Kahana (2019), Contiguity in episodic memory, Psychon. Bull. Rev. — https://pmc.ncbi.nlm.nih.gov/articles/PMC6529295
+- Brunec, Bellana et al. (2018), Multiple scales of representation along the hippocampal anteroposterior axis in humans, Current Biology — https://doi.org/10.1016/j.cub.2018.05.016
+- Poppenk, Evensmoen, Moscovitch & Nadel (2013), Long-axis specialization of the human hippocampus, Trends Cogn. Sci. — http://dx.doi.org/10.1016/j.tics.2013.03.005
+- ES-Mem: Event Segmentation-Based Memory for Long-Term Dialogue Agents (coarse-to-fine retrieval) — https://arxiv.org/abs/2601.07582
+- Anthropic, Writing effective tools for agents — https://www.anthropic.com/engineering/writing-tools-for-agents

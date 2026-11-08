@@ -64,3 +64,7 @@ One @deepseek-ai/dsh-mcp-client entry (serverName biblioteca, transport stdio) i
 
 ## 2026-11-07 — The end of an episode is reachable directly
 library_open accepts at="end" (window ending at the last event) and from_seq (continue forward from a cut). Why: in the first live use the agent asked what was left pending and needed 3 opens without reaching the session's end. The hippocampus responds most at event boundaries, which appear to wrap up the preceding event as a unit (Ben-Yakov & Henson 2018); recall stores page through history instead of re-anchoring (MemGPT/Letta conversation_search).
+
+## 2026-11-07 — Coarse to fine: outline first
+library_open with no arguments returns the episode's outline (landmark events with seq, ~300 tokens); detail is reached by jumping with from_seq or at="end". Cut windows state how many events and tokens remain. Card times come from activity events only.
+Why: in Run 2 the agent paged a whole session linearly (22 calls, 17,347 tokens, 5.7x Run 1). The hippocampus holds memories at two scales, coarse gist (anterior) and fine detail (posterior) (Poppenk et al. 2013; Brunec et al. 2018); event structure carries an episode's essence; agent-tool guidance recommends concise defaults and stating the default policy in the description.
