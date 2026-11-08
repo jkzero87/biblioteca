@@ -37,6 +37,14 @@ DB_PATH = os.path.join(ROOT, "data", "library.db")
 # open 7788 chars / 2793 tokens. Caps sized so worst <= 300 / <= 1500 tokens.
 SEARCH_CHAR_CAP = 570    # worst library_search output <= 300 tokens
 OPEN_CHAR_CAP = 3350     # worst library_open output <= 1500 tokens
+# Coarse-to-fine outline (phase 4 fix step 2): library_open with only an id
+# returns the card header plus one line per landmark event (user messages
+# and tool calls of class write/commit/error). OUTLINE_CHAR_CAP is chosen
+# by src/measure_outline.py so the worst outline over the 5 largest
+# sessions stays <= 350 tokens; each landmark line's text is clipped to
+# OUTLINE_LINE_CHARS.
+OUTLINE_LINE_CHARS = 100
+OUTLINE_CHAR_CAP = 950  # worst outline over 5 largest sessions = 343 tokens <= 350
 
 SERVER_VERSION = "0.1.0"
 SUPPORTED_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
@@ -401,6 +409,83 @@ def render_event(e):
     return out
 
 
+def _outline_landmarks(events):
+    """Landmark events in session order: user messages and tool calls of
+    class write/commit/error. Returns (event, tag, text) with the line text
+    clipped to OUTLINE_LINE_CHARS (phase 4 fix step 2)."""
+    out = []
+    for e in events:
+        if e["kind"] == "user":
+            out.append((e, "user", clip(e["text"], OUTLINE_LINE_CHARS)))
+        elif e["kind"] == "tool":
+            cls = event_class(e)
+            if cls in ("write", "commit", "error"):
+                out.append((e, "observed",
+                            clip("%s [%s]: %s" % (e["name"], cls, e["cmd"]),
+                                 OUTLINE_LINE_CHARS)))
+    return out
+
+
+def _outline_text(events, header, cap):
+    """Coarse-to-fine outline: header + one line per landmark, session
+    order. When the full list exceeds cap: keep the first 3 and last 3
+    user messages, then fill with the highest-class tool landmarks
+    (error > commit > write, session order for ties) until cap is met,
+    and state how many landmark lines were omitted."""
+    lands = _outline_landmarks(events)
+    lines = ["[%s] [%s] %s" % (e.get("seq"), tag, text) for e, tag, text in lands]
+
+    def total(idx, note_=None):
+        t = len(header) + sum(len(lines[k]) + 1 for k in idx)
+        if note_:
+            t += len(note_) + 1
+        return t
+
+    kept_idx = list(range(len(lines)))
+    note = None
+    if total(kept_idx) > cap:
+        user_idx = [i for i, (e, tag, _) in enumerate(lands) if tag == "user"]
+        kept = set(user_idx[:3] + user_idx[-3:])
+        tools = sorted((i for i in range(len(lands)) if i not in kept),
+                       key=lambda i: (-CLASS_RANK[event_class(lands[i][0])], i))
+        for i in tools:
+            kept.add(i)
+            if total(sorted(kept)) > cap:
+                kept.remove(i)
+                break
+        kept_idx = sorted(kept)
+        note = None
+        while True:
+            omitted = len(lands) - len(kept_idx)
+            note = "[omitted %d landmark line(s)]" % omitted if omitted else None
+            if total(kept_idx, note) <= cap:
+                break
+            # free space, least valuable first: lowest-class kept tool lines,
+            # then the last-3 user lines, then the first-3 (reverse session
+            # order within each tier)
+            kept_set = set(kept_idx)
+            drop = []
+            seen = set()
+            for i in (
+                sorted((k for k in kept_idx if lands[k][1] == "observed"),
+                       key=lambda i: (CLASS_RANK[event_class(lands[i][0])], i))
+                + sorted((k for k in user_idx[-3:] if k in kept_set), reverse=True)
+                + sorted((k for k in user_idx[:3] if k in kept_set), reverse=True)
+            ):
+                if i not in seen:
+                    seen.add(i)
+                    drop.append(i)
+            if not drop:
+                note = None
+                break
+            kept_idx.remove(drop[0])
+            kept_idx = sorted(kept_idx)
+    out = [header] + [lines[i] for i in kept_idx]
+    if note:
+        out.append(note)
+    return out
+
+
 def _trailer_line(events, first_unshown_idx):
     """Exact last line when the window is cut: next: from_seq=<n>."""
     if first_unshown_idx is None or first_unshown_idx >= len(events):
@@ -495,7 +580,14 @@ def library_open(db, sid, query, cache, from_seq=None, at=None):
             out.append(trailer)
         return tool_ok("\n".join(out) + "\n")
 
-    # --- default: anchor search (existing behavior)
+    # --- default (no query, no from_seq, no at): coarse outline (phase 4
+    # fix step 2) — card header plus one line per landmark event, so the
+    # caller can jump to detail with from_seq=<seq>
+    if query is None or query == "":
+        return tool_ok("\n".join(_outline_text(events, header, OUTLINE_CHAR_CAP)) + "\n")
+
+    # --- anchor search: a query narrows the window to the highest-class
+    # matching event
     terms = [w.lower() for w in (query or "").split() if w]
     best = None  # (index, event, rank)
     for i, e in enumerate(events):
