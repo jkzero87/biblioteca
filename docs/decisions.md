@@ -76,3 +76,7 @@ Why: Run 3 used outline and at=end, then still walked the session linearly (16 c
 ## 2026-11-07 — Outline: user turns first, harness text is not the user, tests are landmarks
 Outline priority: the last 3 user messages, then the first one, then tool landmarks by class (error > commit > test > write), in session order, until the cap. Messages starting with "<system-reminder>" are harness text, never shown as [user]. A test run (cargo test, pytest, npm test, go test, make test, unittest) is a landmark of class test, with its pass/fail line as outcome.
 Why: the outline of c5f86181 dropped the last 4 user turns (the end state), showed a system-reminder as [user], and omitted "6 passed". The hippocampus is sensitive to prediction error; a test run is a direct check of expectation against reality.
+
+## 2026-11-07 — Phase 4 closed; budget is per server process (known limitation)
+Phase 4 done: the agent used both tools in real sessions and the logs show their cost (reports/phase-4-live-use.md). Runs 5-6 on current code: 8 calls / 5,232 tokens and 5 calls / 2,685 tokens, both reaching the end state, vs Run 3: 16 calls / 15,658 tokens.
+Known limitation: dsh runs one server for all sessions and strips DSH_* env vars, so the per-session budget is keyed by the opened session id, not by the agent session. Run 6 inherited Run 5's spent budget. Accepted for now: in real use two sessions rarely open the same past session within 30 minutes. Single runs vary a lot (Run 3 vs Run 4 on the same code: -35%); compare designs over several runs.
