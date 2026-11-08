@@ -91,6 +91,12 @@ FAMILIAR_CMD_CHARS = 300
 COMMIT_RE = re.compile(r"\[[^\s\]]+ ([0-9a-f]{7,40})\]")
 WRITE_MARKERS = ("sed -i", "tee", " > ", ">>", "mv ", "cp ", "rm ")
 COMMIT_MARKERS = ("git commit", "git push")
+# Test runs (outline fix 2): bash commands of this class carry a pass/fail
+# outcome line and are landmarks of class "test" (priority error > commit
+# > test > write). "pytest" also covers "python -m pytest".
+TEST_MARKERS = ("cargo test", "pytest", "python -m pytest",
+                "python -m unittest", "npm test", "npm run test",
+                "go test", "make test")
 # Source monitoring: retrieval commands run a search over the logs or the
 # filesystem. They are remembered (familiar_terms) but are never evidence.
 RETRIEVAL_PROGS = ("grep", "egrep", "rg")

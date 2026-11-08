@@ -43,19 +43,19 @@ CHAR_RATIO_FALLBACK = 2.5
 # open 7788 chars / 2793 tokens. Caps sized so worst <= 300 / <= 1500 tokens.
 SEARCH_CHAR_CAP = 570    # worst library_search output <= 300 tokens
 OPEN_CHAR_CAP = 3350     # worst library_open output <= 1500 tokens
-# Coarse-to-fine outline (phase 4 fix step 2; revised in the small fix
-# pass): library_open with only an id returns the card header plus up to
-# OUTLINE_TOOL_LANDMARKS tool landmark lines - highest class first
-# (error > commit > write, ties -> later in session, since later results
-# are closer to the end state), each with its outcome - and then user
-# messages (first 3, then last 3) until the cap is met. User lines are
-# clipped to OUTLINE_USER_CHARS, tool lines to OUTLINE_LINE_CHARS.
+# Coarse-to-fine outline (phase 4 fix step 2; outline fix 2): library_open
+# with only an id returns the card header, then the last 3 user messages,
+# then the first user message, then tool landmark lines by class
+# (error > commit > test > write, ties -> later in session, since later
+# results are closer to the end state), each with its outcome, all
+# rendered in session order until the cap is met. User lines are clipped
+# to OUTLINE_USER_CHARS, tool lines to OUTLINE_LINE_CHARS. User messages
+# starting with "<system-reminder>" are harness text and never appear.
 # OUTLINE_CHAR_CAP is chosen by src/measure_outline.py so the worst
 # outline over the 5 largest sessions stays <= 350 tokens.
 OUTLINE_USER_CHARS = 60
 OUTLINE_LINE_CHARS = 100
-OUTLINE_TOOL_LANDMARKS = 4
-OUTLINE_CHAR_CAP = 803  # incl. next: trailer; worst outline over 5 largest sessions = 348 tokens <= 350
+OUTLINE_CHAR_CAP = 723  # incl. next: trailer; outline fix 2: worst over 5 largest sessions = 322 tokens <= 350 (803 was 356)
 # Landmark outcome (phase 4 fix 2 step 2): appended after " -> " to each
 # tool-call landmark line - "error" if isError, else the first non-empty
 # result line containing a digit or an outcome keyword, clipped to
@@ -63,6 +63,10 @@ OUTLINE_CHAR_CAP = 803  # incl. next: trailer; worst outline over 5 largest sess
 OUTCOME_CHARS = 60
 OUTCOME_KEYWORDS = ("passed", "failed", "error", "ok", "finished",
                     "warning", "created", "committed")
+# Test-run outcome (outline fix 2 step 2): first result line containing
+# "passed", "failed", "test result", "ok" or "FAILED" (case-insensitive,
+# "FAILED" == lowercased "failed"), clipped to OUTCOME_CHARS (<= 60 chars).
+TEST_OUTCOME_KEYWORDS = ("passed", "failed", "test result", "ok")
 # Per-session read budget (phase 4 fix 2 step 3): library_open serves at
 # most BUDGET_TOKENS (estimated as chars/2.5) within a BUDGET_WINDOW_S
 # window from the first serve for that session. from_seq calls without a
@@ -136,7 +140,7 @@ TOOLS = [
     },
 ]
 
-CLASS_RANK = {"error": 4, "commit": 3, "write": 2, "read": 1, "other": 0}
+CLASS_RANK = {"error": 4, "commit": 3, "test": 2, "write": 1, "read": 1, "other": 0}
 
 
 def log(msg):
@@ -408,6 +412,8 @@ def event_class(e):
     if e["name"] == "bash":
         if any(mk in e["cmd"] for mk in extract.COMMIT_MARKERS):
             return "commit"
+        if any(mk in e["cmd"] for mk in extract.TEST_MARKERS):
+            return "test"
         if any(mk in e["cmd"] for mk in extract.WRITE_MARKERS):
             return "write"
         return "other"
@@ -416,6 +422,13 @@ def event_class(e):
     if e["name"] in extract.FILE_TOOLS:
         return "read"
     return "other"
+
+
+def _is_harness_user(e):
+    """Harness text, never shown as [user] (outline fix 2 step 2): user
+    messages whose text starts with "<system-reminder>" after stripping
+    whitespace (the harness injects them, the user did not type them)."""
+    return e.get("text", "").strip().startswith("<system-reminder>")
 
 
 def render_event(e):
@@ -450,22 +463,46 @@ def _outcome(result):
     return None
 
 
+def _test_outcome(result):
+    """Outcome for a test-run landmark (outline fix 2 step 2): the first
+    non-empty result line containing "passed", "failed", "test result",
+    "ok" or "FAILED" (case-insensitive), clipped to OUTCOME_CHARS (<= 60
+    chars); None when no line qualifies."""
+    if not result:
+        return None
+    for line in result.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if any(k in line.lower() for k in TEST_OUTCOME_KEYWORDS):
+            return line[:OUTCOME_CHARS]
+    return None
+
+
 def _outline_landmarks(events):
     """Landmark events in session order: user messages and tool calls of
-    class write/commit/error that carry an outcome. Returns (event, tag,
-    text): user text clipped to OUTLINE_USER_CHARS; tool text is
+    class write/commit/test/error that carry an outcome. Returns (event,
+    tag, text): user text clipped to OUTLINE_USER_CHARS; tool text is
     "name [cls]: cmd -> outcome" with the cmd clipped so the whole line
     stays within OUTLINE_LINE_CHARS (never the outcome). Tool events
-    without an outcome are not landmarks."""
+    without an outcome are not landmarks. User messages that are harness
+    text (<system-reminder>, outline fix 2) are not landmarks."""
     out = []
     for e in events:
         if e["kind"] == "user":
+            if _is_harness_user(e):
+                continue
             # clip appends an ellipsis, so clip to n-1 to stay <= n chars
             out.append((e, "user", clip(e["text"], OUTLINE_USER_CHARS - 1)))
         elif e["kind"] == "tool":
             cls = event_class(e)
-            if cls in ("write", "commit", "error"):
-                out_txt = "error" if e["is_error"] else _outcome(e.get("result") or "")
+            if cls in ("write", "commit", "error", "test"):
+                if cls == "error":
+                    out_txt = "error"
+                elif cls == "test":
+                    out_txt = _test_outcome(e.get("result") or "")
+                else:
+                    out_txt = _outcome(e.get("result") or "")
                 if out_txt:
                     base = "%s [%s]: %s" % (e["name"], cls, e["cmd"])
                     room = max(10, OUTLINE_LINE_CHARS - 4 - len(out_txt))
@@ -474,11 +511,12 @@ def _outline_landmarks(events):
 
 
 def _outline_text(events, header, cap, sid):
-    """Coarse-to-fine outline: header, then up to OUTLINE_TOOL_LANDMARKS
-    tool landmark lines (highest class first: error > commit > write,
-    ties -> later in session, since later results are closer to the end
-    state), each with its outcome, then user messages (first 3, then
-    last 3) until cap is met; the rest is counted in the omitted note."""
+    """Coarse-to-fine outline (outline fix 2): header, then the last 3
+    user messages, then the first user message, then tool landmark lines
+    by class (error > commit > test > write, ties -> later in session,
+    since later results are closer to the end state), each with its
+    outcome; all rendered in session order until the cap is met. The
+    omitted lines are counted per kind (user / tool) in the note."""
     lands = _outline_landmarks(events)
     lines = ["[%s] [%s] %s" % (e.get("seq"), tag, text) for e, tag, text in lands]
 
@@ -491,25 +529,44 @@ def _outline_text(events, header, cap, sid):
     user_idx = [i for i, (e, tag, _) in enumerate(lands) if tag == "user"]
     tool_idx = sorted((i for i, (e, tag, _) in enumerate(lands) if tag == "observed"),
                       key=lambda i: (-CLASS_RANK[event_class(lands[i][0])], -i))
-    kept = tool_idx[:OUTLINE_TOOL_LANDMARKS]
-    fill = user_idx[:3] + [i for i in user_idx[-3:] if i not in user_idx[:3]]
-    for i in fill:
+    user_set = set(user_idx)
+    tool_set = set(tool_idx)
+
+    def note_for(idx):
+        omitted_u = len(user_set - idx)
+        omitted_t = len(tool_set - idx)
+        if omitted_u or omitted_t:
+            return "[omitted %d user, %d tool line(s)]" % (omitted_u, omitted_t)
+        return None
+    # priority: last 3 user messages, then the first one
+    must = user_idx[-3:]
+    if user_idx and user_idx[0] not in must:
+        must.append(user_idx[0])
+    kept = []
+    for i in must:
         if total(sorted(kept + [i])) <= cap:
             kept.append(i)
+    # then tool landmarks by class, until the cap is met (all tool lines are
+    # <= OUTLINE_LINE_CHARS, so the first line that does not fit stops the
+    # run: none after it can fit either)
+    for i in tool_idx:
+        if total(sorted(kept + [i])) <= cap:
+            kept.append(i)
+        else:
+            break
     kept_set = set(kept)
     kept_idx = sorted(kept)
-    omitted = len(lands) - len(kept_idx)
-    note = "[omitted %d landmark line(s)]" % omitted if omitted else None
-    # never drop a tool landmark: free user lines first, last-added first
+    note = note_for(kept_set)
+    # when still over the cap, drop lines in reverse priority: tool lines
+    # first (lowest priority), then user fillers, last-added first
     while note and total(kept_idx, note) > cap:
-        fillers = [i for i in kept_idx if i not in kept_set]
-        if not fillers:
+        if not kept:
             note = None
             break
-        kept_idx.remove(max(fillers))
-        kept_idx = sorted(kept_idx)
-        omitted = len(lands) - len(kept_idx)
-        note = "[omitted %d landmark line(s)]" % omitted if omitted else None
+        kept.pop()
+        kept_set = set(kept)
+        kept_idx = sorted(kept)
+        note = note_for(kept_set)
     out = [header] + [lines[i] for i in kept_idx]
     if note:
         out.append(note)
@@ -614,16 +671,20 @@ def library_open(db, sid, query, cache, from_seq=None, at=None):
     if at == "end":
         last_user = last_assist = None
         for i, e in enumerate(events):
-            if e["kind"] == "user":
+            if e["kind"] == "user" and not _is_harness_user(e):
                 last_user = i
             elif e["kind"] == "assistant":
                 last_assist = i  # parse_events drops assistant events with no visible text
-        blocks = [render_event(e) for e in events]
+        # harness user events (<system-reminder>, outline fix 2) are never
+        # rendered as [user]: they cost nothing in the window
+        blocks = [render_event(e)
+                  if not (e["kind"] == "user" and _is_harness_user(e)) else []
+                  for e in events]
         # largest tail that fits the cap: extend backward from the last
         # event while it still fits
         s0 = len(events) - 1
         total = sum(len(l) for l in blocks[s0])
-        while (s0 > 0
+        while (s0 > 0 and blocks[s0 - 1]
                and total + 1 + sum(len(l) for l in blocks[s0 - 1])
                <= OPEN_CHAR_CAP):
             total += 1 + sum(len(l) for l in blocks[s0 - 1])
@@ -638,8 +699,13 @@ def library_open(db, sid, query, cache, from_seq=None, at=None):
         for i in idxs:
             pos[i] = p
             p += len(blocks[i])
-        total = sum(len(l) for l in lines) + (len(lines) - 1)
+        total = sum(len(l) for l in lines) + max(0, len(lines) - 1)
         shown = set(idxs)
+        # harness user events are never shown: the trailer passes them even
+        # when they fall before the window
+        for i, e in enumerate(events):
+            if e["kind"] == "user" and _is_harness_user(e):
+                shown.add(i)
         first_unshown = next((i for i in range(len(events)) if i not in shown), None)
         trailer = _trailer_line(events, first_unshown, sid) \
             if first_unshown is not None else None
