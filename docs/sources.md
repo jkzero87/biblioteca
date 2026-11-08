@@ -36,3 +36,4 @@
 - Poppenk, Evensmoen, Moscovitch & Nadel (2013), Long-axis specialization of the human hippocampus, Trends Cogn. Sci. — http://dx.doi.org/10.1016/j.tics.2013.03.005
 - ES-Mem: Event Segmentation-Based Memory for Long-Term Dialogue Agents (coarse-to-fine retrieval) — https://arxiv.org/abs/2601.07582
 - Anthropic, Writing effective tools for agents — https://www.anthropic.com/engineering/writing-tools-for-agents
+- McClelland, McNaughton & O'Reilly (1995), Why there are complementary learning systems in the hippocampus and neocortex, Psychological Review — https://doi.org/10.1037/0033-295X.102.3.419
