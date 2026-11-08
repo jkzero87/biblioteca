@@ -64,9 +64,8 @@ TOOLS = [
     {
         "name": "library_search",
         "description": (
-            "Search your work library (past sessions) for a query. Up to 5 "
-            "one-line hits labelled [card], [familiar] or [searched] with "
-            "scoring factors. Use it before re-investigating anything."
+            "Search past work sessions. Returns ≤5 one-line cards. Then use "
+            "library_open on an id."
         ),
         "inputSchema": {
             "type": "object",
@@ -84,10 +83,9 @@ TOOLS = [
     {
         "name": "library_open",
         "description": (
-            "Open a session by id: card header + seq-numbered blocks "
-            "([observed], [user], [model said \u2014 verify]). Query anchors "
-            "start; from_seq resumes cuts; at=\"end\" reads the tail. Cut "
-            "ends: next: from_seq=<n>."
+            "Open a past session. No args = outline (~300 tok): landmarks "
+            "with seq. Then from_seq=<seq> for detail, or at='end' for how "
+            "it ended."
         ),
         "inputSchema": {
             "type": "object",
