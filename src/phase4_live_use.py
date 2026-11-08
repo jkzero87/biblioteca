@@ -15,6 +15,7 @@ one key-name survey plus one truncated (80 chars) example of visible text.
 No raw log lines are printed: only key names, counts, and <=2 truncated values.
 Logs are opened read-only. Only network call: POST /tokenize.
 """
+import datetime
 import json
 import os
 import subprocess
@@ -96,9 +97,36 @@ def end_of(evs):
                 if isinstance(e.get("time"), int)), default=0)
 
 
+def freshness_warning():
+    """Freshness check (phase 4 close-out STEP 4): print one WARNING line
+    at the top when the running server's start time (data/server_status.json)
+    is earlier than the current mtime of src/library_server.py - the server
+    then runs older code than what is on disk. Silent when the status file
+    is missing or unreadable (nothing to compare)."""
+    status_path = os.path.join(os.path.dirname(sys_path_dir),
+                               "data", "server_status.json")
+    try:
+        with open(status_path) as f:
+            st = json.load(f)
+        start = datetime.datetime.fromisoformat(st["start"])
+        mtime = st.get("library_server_mtime")
+        if mtime is None:
+            return
+        mtime_dt = datetime.datetime.fromtimestamp(
+            mtime, tz=datetime.datetime.fromisoformat(st["start"]).tzinfo)
+        if start < mtime_dt:
+            print("WARNING: library server (pid %s, started %s) started before "
+                  "src/library_server.py (mtime %s): it runs older code - "
+                  "restart the app before trusting its behavior"
+                  % (st.get("pid"), st["start"],
+                     mtime_dt.isoformat(timespec="seconds")))
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+
+
 def main():
-    import datetime
     # optional arg: measure that specific session id instead of the newest
+    freshness_warning()
     want_sid = sys.argv[1] if len(sys.argv) > 1 else None
     candidates = []  # (end_ms, path, n_calls)
     empty_vis, empty_cur = 0, 0

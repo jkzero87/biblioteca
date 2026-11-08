@@ -872,7 +872,40 @@ def dispatch(method, params, db, cache):
     return None  # unknown request
 
 
+def _write_server_status():
+    """Freshness check (phase 4 close-out STEP 4): write
+    data/server_status.json at startup - pid, start time (ISO local),
+    mtime of library_server.py, git HEAD short hash (null if git fails).
+    Readers compare start against the mtime to detect a server that is
+    older than the current code. Never raises."""
+    status = {
+        "pid": os.getpid(),
+        "start": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "library_server_mtime": None,
+        "git_head": None,
+    }
+    try:
+        status["library_server_mtime"] = os.path.getmtime(
+            os.path.join(ROOT, "src", "library_server.py"))
+    except OSError:
+        pass
+    try:
+        proc = subprocess.run(
+            ["git", "-C", ROOT, "rev-parse", "--short", "HEAD"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+        if proc.returncode == 0:
+            status["git_head"] = proc.stdout.decode("ascii", "replace").strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        with open(os.path.join(ROOT, "data", "server_status.json"), "w") as f:
+            json.dump(status, f)
+    except OSError as exc:
+        log("cannot write server_status.json: %s" % exc)
+
+
 def main():
+    _write_server_status()
     db = Db(DB_PATH)
     cache = collections.OrderedDict()
     log("starting (db %s)" % DB_PATH)
