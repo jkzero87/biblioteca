@@ -550,7 +550,10 @@ def library_open(db, sid, query, cache, from_seq=None, at=None):
 
     # --- at="end": window ENDS at the last event, extends backwards to the
     # cap; the last user message and the last non-empty assistant text are
-    # always included.
+    # always included, and the whole output (incl. trailer) respects
+    # OPEN_CHAR_CAP: when the required content does not fit, the assistant
+    # text is truncated first (keep its start, marked "[…cut]"), then the
+    # user message (phase 4 fix 2 step 1).
     if at == "end":
         last_user = last_assist = None
         for i, e in enumerate(events):
@@ -558,31 +561,47 @@ def library_open(db, sid, query, cache, from_seq=None, at=None):
                 last_user = i
             elif e["kind"] == "assistant":
                 last_assist = i  # parse_events drops assistant events with no visible text
-        required = [i for i in (last_user, last_assist) if i is not None]
-        # window start must stay at or before this index so the last user
-        # message and last assistant text are always included; when neither
-        # exists, the cap alone decides (may cut down to the last event)
-        floor = min(required) if required else len(events) - 1
         blocks = [render_event(e) for e in events]
-        all_lines = [header] + [l for b in blocks for l in b]
-        total_len = sum(len(l) for l in all_lines) + (len(all_lines) - 1)
-        # smallest s in [0, floor] such that events[s:] fits the cap
-        s = 0
-        while s < floor and total_len > OPEN_CHAR_CAP:
-            b = blocks[s]
-            # dropping block s removes its lines, the newlines inside it, and
-            # the one newline after it
-            total_len -= sum(len(l) for l in b) + len(b)
-            s += 1
-        starts = []
-        li = 1
-        for b in blocks:
-            starts.append(li)
-            li += len(b)
-        out = all_lines[starts[s]:]
-        if s > 0:
-            # the cut-off prefix is events[0:s]; first unshown event is events[0]
-            out.append(_trailer_line(events, 0, sid))
+        # largest tail that fits the cap: extend backward from the last
+        # event while it still fits
+        s0 = len(events) - 1
+        total = sum(len(l) for l in blocks[s0])
+        while (s0 > 0
+               and total + 1 + sum(len(l) for l in blocks[s0 - 1])
+               <= OPEN_CHAR_CAP):
+            total += 1 + sum(len(l) for l in blocks[s0 - 1])
+            s0 -= 1
+        # the required events may sit before the cap window: include them
+        # (session order) even though they fall outside it
+        idxs = sorted(i for i in (last_user, last_assist) if i is not None and i < s0)
+        idxs += list(range(s0, len(events)))
+        lines = [l for i in idxs for l in blocks[i]]
+        pos = {}
+        p = 0
+        for i in idxs:
+            pos[i] = p
+            p += len(blocks[i])
+        total = sum(len(l) for l in lines) + (len(lines) - 1)
+        shown = set(idxs)
+        first_unshown = next((i for i in range(len(events)) if i not in shown), None)
+        trailer = _trailer_line(events, first_unshown, sid) \
+            if first_unshown is not None else None
+        if trailer:
+            total += len(trailer) + 1
+        if total > OPEN_CHAR_CAP:
+            # the required content does not fit: truncate the assistant text
+            # first (keep its start, mark "[…cut]"), then the user message
+            marker = " […cut]"
+            for i in (last_assist, last_user):
+                if i is None or i not in pos or total <= OPEN_CHAR_CAP:
+                    continue
+                body = clip(events[i]["text"], MSG_CHARS)
+                line = lines[pos[i]]
+                keep = max(0, len(body) - (total - OPEN_CHAR_CAP) - len(marker))
+                new = line[:len(line) - len(body)] + body[:keep] + marker
+                total += len(new) - len(line)
+                lines[pos[i]] = new
+        out = lines + ([trailer] if trailer else [])
         return tool_ok("\n".join(out) + "\n")
 
     # --- from_seq: start the window at the first event with seq >= from_seq
