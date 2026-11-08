@@ -80,3 +80,46 @@ Diagnosed with `src/phase4_endgap.py` (aggregates only; log read-only; no raw li
 **Discrepancy note.** All 23 cargo-related tool calls in this log are dated 2026-10-23 (15:40–18:21 local); the only event dated 2026-10-25 is the end-seed. Rendered blocks carry no event times (`render_event`, `src/library_server.py:389-401`), so a "10-25" date seen in Run 1's output would have come from event *text* content, not from an event timestamp.
 
 Not fixed (per task).
+
+## Run 3 (after outline default)
+
+Same script (`src/phase4_live_use.py`), this session excluded. 5 sessions now have `mcp__biblioteca__*` calls; the most recent selected:
+
+- id: `session-8340c844-289b-4411-bd68-c8aee73077e7`
+- ended: 2026-11-07T20:03:19 (local, America/Bogota)
+- context: the agent was asked to use **only** the library tools to reconstruct what was done in the Rust rewrite of imgproxy (`~/rust-lab`) so it could be resumed. One search, one no-arg open (outline), one `at="end"` open, then a 13-step `from_seq` walk through the same target session `session-c5f86181-…`.
+
+| seq | tool | args | result chars | result tokens | truncated |
+|----:|------|------|-------------:|--------------:|:---------:|
+| 19 | `library_search` | query=`Rust rewrite imgproxy` project=`rust-lab` | 300 | 143 | no |
+| 24 | `library_open` | id=`session-c5f86181-…` (no query, no at) → outline | 887 | 327 | no |
+| 29 | `library_open` | id=…, at=`end` | 6040 | 2077 | no |
+| 34 | `library_open` | id=…, from_seq=11 | 3376 | 1230 | no |
+| 39 | `library_open` | id=…, from_seq=46 | 3070 | 1097 | no |
+| 44 | `library_open` | id=…, from_seq=99 | 3330 | 1080 | no |
+| 49 | `library_open` | id=…, from_seq=130 | 2667 | 809 | no |
+| 54 | `library_open` | id=…, from_seq=149 | 3066 | 1193 | no |
+| 59 | `library_open` | id=…, from_seq=163 | 3127 | 1182 | no |
+| 64 | `library_open` | id=…, from_seq=184 | 3310 | 1282 | no |
+| 69 | `library_open` | id=…, from_seq=220 | 3351 | 1143 | no |
+| 74 | `library_open` | id=…, from_seq=249 | 3204 | 1100 | no |
+| 79 | `library_open` | id=…, from_seq=276 | 3292 | 1067 | no |
+| 84 | `library_open` | id=…, from_seq=300 | 2290 | 776 | no |
+| 89 | `library_open` | id=…, from_seq=322 | 2847 | 924 | no |
+| 94 | `library_open` | id=…, from_seq=398 | 567 | 228 | no |
+
+**Totals (Run 3):** 16 calls · 44724 result chars · 15658 result tokens.
+
+**Reading (Run 3):** the outline default did its job — the no-arg open returned an 887-char / 327-token outline (within the 350-token budget), and `at="end"` then delivered the end state in one call (6040 chars / 2077 tokens, untruncated), so Run 2's failure mode (walk-to-tail to *reach* the end) was no longer needed for that purpose. The 13-step `from_seq` walk 11 → 46 → … → 398 re-walked the session front-to-back and again stopped at renderable seq 398 — the c5f86181 end-state gap is unchanged (seq 399–402 are bookkeeping-only events `parse_events` skips). No result carried a `[truncated at` marker, no error results, no re-walk. Fewer calls than Run 2 (16 vs 22) and fewer tokens (15658 vs 17347).
+
+**Agent's final answer (seq 98, 1855 chars):** a complete structured summary — what was done per turn (recon, workspace setup, `convert.rs` + tests, unwrap fix, `cargo test` 6 passed), what is pending (`main.rs` still a stub, deps unused, no cutover), and the verdict "Did the library save work? Yes, substantially" (it would otherwise have needed log digging, re-reading `imgproxy.py`, and re-running `cargo build --timings`). Note: the answer self-reports "one search, six opens"; the log records 1 search + 15 opens — the "six" is an undercount in the agent's own summary, not a log discrepancy.
+
+**Summary (Runs 1–3):**
+
+| run | calls | tokens | reached end state? | answer quality |
+|-----|------:|-------:|:------------------:|----------------|
+| Run 1 | 4 | 3028 | no | partial |
+| Run 2 | 22 | 17347 | yes | complete |
+| Run 3 | 16 | 15658 | yes | complete (same as run 2) |
+
+**tools/list schema tokens per request:** Run 1: 250 · Run 2: 348 · Run 3: **307** (measured with `src/measure_tokens.py measure`: `json.dumps({"tools": L.TOOLS})` = 1221 chars → 307 tokens).
