@@ -8,8 +8,11 @@ a summary plus every parse failure (path + reason). No model, no network.
 Card fields and their source in the log:
   id               <- `session` event field `id`
   source           <- path of the .zstd file
-  start / end      <- min / max of `time` (ms epoch) over all events;
-                       start also cross-checked against `session.createdAt`
+  start / end      <- min / max of `time` (ms epoch) over ACTIVITY events
+                       only (user/message, assistant/message, tool/call,
+                       tool/result) — never bookkeeping events (session
+                       end-seed, step/end, turn/end, workspace/changes, ...)
+                       written at session close (phase 4 fix, step 1)
   cwd              <- `session.cwd`
   first_message    <- first `user/message` with data.source.kind == 'user',
                        joined text blocks, truncated to 300 chars
@@ -96,6 +99,11 @@ FIND_NAME_FLAGS = ("-name", "-iname", "-path")
 # Tool calls that search the filesystem: their path args are retrieval
 # acts, like a shell grep (remembered, never evidence).
 SEARCH_TOOLS = ("grep", "glob")
+# Events that define the card's start/end: real activity only. Bookkeeping
+# events (session end-seed, step/end, turn/end, workspace/changes, ...) are
+# written at session close and would stretch the card's end days past the
+# last real activity (phase 4 fix, step 1).
+ACTIVITY_EVENTS = ("user/message", "assistant/message", "tool/call", "tool/result")
 
 # Source monitoring (design.md 3.7): every stored field carries its origin.
 # Phase 2b has no model involvement, so nothing is tagged 'model'.
@@ -271,12 +279,16 @@ def extract_card(path):
             continue
         et = ev.get("type")
         data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
-        t = ev.get("time")
-        if isinstance(t, (int, float)):
-            if min_t is None or t < min_t:
-                min_t = t
-            if max_t is None or t > max_t:
-                max_t = t
+        # start/end come from activity events only; bookkeeping events
+        # (session end-seed, step/end, turn/end, workspace/changes, ...)
+        # are written at session close and must not stretch the card
+        if et in ACTIVITY_EVENTS:
+            t = ev.get("time")
+            if isinstance(t, (int, float)):
+                if min_t is None or t < min_t:
+                    min_t = t
+                if max_t is None or t > max_t:
+                    max_t = t
         if et == "session":
             card["id"] = ev.get("id") or card["id"]
             card["cwd"] = ev.get("cwd")
