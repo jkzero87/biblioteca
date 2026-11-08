@@ -10,7 +10,13 @@ Spawns the server and, over stdio:
   (d) library_open on session-c5f86181 with no query -> coarse outline
        (landmark lines with seq, omitted note, next: trailer);
   (e) library_open from_seq=<landmark seq> from (d) -> detail window;
-  (f) library_open at="end".
+  (f) library_open at="end";
+  (g) budget demo on a FRESH server process (in-memory budget starts
+      clean): linear walk of c5f86181 - outline, at=end, then from_seq
+      jumps following the trailers - printing estimated tokens served
+      (chars/2.5) per call and the running total, until the per-session
+      budget (4000 tokens / 30 min) is reached; a query call after the
+      budget must still return content.
 Prints each response truncated to 300 chars, the elapsed ms, and the
 response token count (POST 127.0.0.1:8092/tokenize).
 
@@ -183,6 +189,69 @@ def main():
     show_tokens("(f) at=end window", res)
     print("  OK: at=end includes last [user] and [model said] blocks; "
           "front trailer %s, %.1f ms" % ("yes" if trailer else "no", ms))
+
+    # (g) budget demo on a FRESH server process: the in-memory per-session
+    # budget (4000 tokens / 30 min) starts clean, so the linear walk -
+    # outline, at=end, then from_seq jumps following the trailers - shows
+    # exactly which call gets the budget message; a query call after the
+    # budget must still return content
+    walk = subprocess.Popen(
+        [sys.executable, os.path.join(ROOT, "src", "library_server.py")],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        encoding="utf-8",
+    )
+    wmid = [0]
+    walk_cum = [0.0]
+
+    def wcall(args):
+        wmid[0] += 1
+        walk.stdin.write(json.dumps({
+            "jsonrpc": "2.0", "id": wmid[0],
+            "method": "tools/call",
+            "params": {"name": "library_open",
+                       "arguments": dict({"id": SID}, **args)},
+        }) + "\n")
+        walk.stdin.flush()
+        r = json.loads(walk.stdout.readline())["result"]
+        assert r["isError"] is False, r
+        return r["content"][0]["text"]
+
+    def walk_step(label, args):
+        text = wcall(args)
+        est = len(text) / 2.5
+        walk_cum[0] += est
+        print("  %-18s est tokens: %6.0f  cumulative: %7.0f"
+              % (label, est, walk_cum[0]))
+        return text
+
+    walk_step("outline", {})
+    walk_step("at=end", {"at": "end"})
+    budget_at = None
+    seq = 0
+    for i in range(1, 11):
+        text = walk_step("from_seq=%d" % seq, {"from_seq": seq})
+        if "Budget for this session reached" in text:
+            budget_at = i
+            print("  OK: budget message on from_seq call #%d: %s"
+                  % (i, text.strip()))
+            break
+        m = TRAILER_RE.match(text.rstrip("\n").split("\n")[-1])
+        if m is None:
+            break
+        seq = int(m.group(1))
+    assert budget_at, "walk never hit the per-session budget"
+    text = wcall({"query": "Cargo.toml"})
+    wlines = text.rstrip("\n").split("\n")
+    assert wlines[0].startswith("[card] %s " % SID), wlines[0]
+    assert len(wlines) >= 3, "query call after budget must return a window"
+    print("  OK: query call after budget still returned content (%d lines)"
+          % len(wlines))
+    walk.stdin.close()
+    assert walk.wait(timeout=10) == 0
+    print("  walk server exited cleanly on EOF (rc=0)")
 
     proc.stdin.close()
     stderr = proc.stderr.read()
