@@ -22,6 +22,7 @@ import datetime
 import json
 import math
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -63,10 +64,13 @@ OUTLINE_CHAR_CAP = 723  # incl. next: trailer; outline fix 2: worst over 5 large
 OUTCOME_CHARS = 60
 OUTCOME_KEYWORDS = ("passed", "failed", "error", "ok", "finished",
                     "warning", "created", "committed")
-# Test-run outcome (outline fix 2 step 2): first result line containing
-# "passed", "failed", "test result", "ok" or "FAILED" (case-insensitive,
-# "FAILED" == lowercased "failed"), clipped to OUTCOME_CHARS (<= 60 chars).
+# Test-run outcome (phase 4 close-out STEP 3): first match wins, in this
+# order: 1) a line containing "test result:"; 2) a line matching "\d+
+# passed"; 3) a line containing "FAILED"; 4) the old rule - a line
+# containing "passed", "failed", "test result" or "ok" (case-insensitive).
+# Clipped to OUTCOME_CHARS (<= 60 chars).
 TEST_OUTCOME_KEYWORDS = ("passed", "failed", "test result", "ok")
+_TEST_PASSED_RE = re.compile(r"\d+ passed")
 # Per-session read budget (phase 4 fix 2 step 3): library_open serves at
 # most BUDGET_TOKENS (estimated as chars/2.5) within a BUDGET_WINDOW_S
 # window from the first serve for that session. from_seq calls without a
@@ -464,18 +468,27 @@ def _outcome(result):
 
 
 def _test_outcome(result):
-    """Outcome for a test-run landmark (outline fix 2 step 2): the first
-    non-empty result line containing "passed", "failed", "test result",
-    "ok" or "FAILED" (case-insensitive), clipped to OUTCOME_CHARS (<= 60
-    chars); None when no line qualifies."""
+    """Outcome for a test-run landmark (phase 4 close-out STEP 3): first
+    match wins - 1) a line containing "test result:"; 2) a line matching
+    "\\d+ passed"; 3) a line containing "FAILED"; 4) the old rule, a line
+    containing "passed", "failed", "test result" or "ok"
+    (case-insensitive). Clipped to OUTCOME_CHARS (<= 60 chars); None when
+    no line qualifies."""
     if not result:
         return None
-    for line in result.split("\n"):
-        line = line.strip()
-        if not line:
-            continue
-        if any(k in line.lower() for k in TEST_OUTCOME_KEYWORDS):
-            return line[:OUTCOME_CHARS]
+    lines = [l.strip() for l in result.split("\n") if l.strip()]
+    for l in lines:
+        if "test result:" in l:
+            return l[:OUTCOME_CHARS]
+    for l in lines:
+        if _TEST_PASSED_RE.search(l):
+            return l[:OUTCOME_CHARS]
+    for l in lines:
+        if "FAILED" in l:
+            return l[:OUTCOME_CHARS]
+    for l in lines:
+        if any(k in l.lower() for k in TEST_OUTCOME_KEYWORDS):
+            return l[:OUTCOME_CHARS]
     return None
 
 
