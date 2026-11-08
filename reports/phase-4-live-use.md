@@ -62,3 +62,21 @@ Same script (`src/phase4_live_use.py`), this session excluded. 3 sessions now ha
 > library saved re-reading imgproxy.py and the log, but needed 3 opens and never reached the session's end state
 
 **Reading:** the library paid off (one search + three opens ≈ 3028 tokens instead of re-reading `imgproxy.py` plus the session log), but the anchor-based open re-anchored near the start of the session on every call: three opens, all truncated by `OPEN_CHAR_CAP`, and the end of the session was never reached. That is what the step-3 additions fix: `at="end"` (window ending at the last event) and `from_seq` (continue forward from a cut, via the exact `next: from_seq=<n>` trailer).
+
+## End-state gap: card end vs. library tail (session c5f86181)
+
+Diagnosed with `src/phase4_endgap.py` (aggregates only; log read-only; no raw lines).
+
+**Cause.** The card's `end` is the max of `time` over **all** events (extract.py: "start / end ← min / max of `time` (ms epoch) over all events"), and that maximum belongs to seq 402 `session/end-seed`, a bookkeeping event written 2026-10-25T16:45:51-05:00 (= 21:45:51 UTC — the card's end), two days after the last real activity. `library_open` renders only what `parse_events` keeps, and `parse_events` (`src/library_server.py:317-368`) handles exactly four event types in an if/elif chain: `user/message` (L333), `assistant/message` with non-empty visible text (L336-343; `if text.strip()` at L342), `tool/call` (L344), `tool/result` (L359). Any other type falls through silently (no `else` branch). The four events after seq 398 — seq 399 `step/end`, 400 `workspace/changes`, 401 `turn/end`, 402 `session/end-seed` — are all of that kind, so the last renderable event is seq 398 (`assistant/message`, 2026-10-23T18:22:40-05:00), and `at="end"` / `from_seq` stop there.
+
+**Evidence (aggregates only).**
+- Raw log: 404 events; seq 0..402, all unique, strictly increasing in file order (0 adjacent decreases), no time inversion → not a resumed/restarted log.
+- Time span: 2026-10-23T15:39:23-05:00 .. 2026-10-25T16:45:51-05:00.
+- Events with time after seq 398: exactly 4 (seq 399..402): `step/end`, `workspace/changes`, `turn/end`, `session/end-seed`.
+- Of the 52 events after 2026-10-23T18:20-05:00, `parse_events` would keep 17 and skip 35: 7 of the skips are assistant messages without visible text (L342), the rest are bookkeeping types with no branch in L333-359.
+- Whole file: `parse_events` keeps 135 of 404; kept seq span 8..398; kept time span 2026-10-23T15:39:51..18:22:40-05:00.
+- Card row (`data/library.db`): source = this `.zstd` file; start=2026-10-23T20:39:23Z, end=2026-10-25T21:45:51Z (= 16:45:51-05:00) — exactly the `session/end-seed` time.
+
+**Discrepancy note.** All 23 cargo-related tool calls in this log are dated 2026-10-23 (15:40–18:21 local); the only event dated 2026-10-25 is the end-seed. Rendered blocks carry no event times (`render_event`, `src/library_server.py:389-401`), so a "10-25" date seen in Run 1's output would have come from event *text* content, not from an event timestamp.
+
+Not fixed (per task).
