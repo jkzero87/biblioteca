@@ -80,3 +80,7 @@ Why: the outline of c5f86181 dropped the last 4 user turns (the end state), show
 ## 2026-11-07 — Phase 4 closed; budget is per server process (known limitation)
 Phase 4 done: the agent used both tools in real sessions and the logs show their cost (reports/phase-4-live-use.md). Runs 5-6 on current code: 8 calls / 5,232 tokens and 5 calls / 2,685 tokens, both reaching the end state, vs Run 3: 16 calls / 15,658 tokens.
 Known limitation: dsh runs one server for all sessions and strips DSH_* env vars, so the per-session budget is keyed by the opened session id, not by the agent session. Run 6 inherited Run 5's spent budget. Accepted for now: in real use two sessions rarely open the same past session within 30 minutes. Single runs vary a lot (Run 3 vs Run 4 on the same code: -35%); compare designs over several runs.
+
+## 2026-11-07 — One harness-prefix list, applied everywhere
+User/message events whose text starts with a harness prefix are not the user: they never become [user] lines, never fill first_message, and are not indexed as user text. Prefixes: "<system-reminder>", "Time sampled while preparing turn", "Current runtime context. This snapshot", "This is an automatically generated check". The list lives in one place (src/extract.py) and every module imports it.
+Why: harness text appeared as [user] in outlines, and the two most common "user" prefixes across all sessions (255 and 112 messages) are harness text, more than all real user messages together.
