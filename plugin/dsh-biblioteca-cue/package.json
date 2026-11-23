@@ -1,0 +1,30 @@
+{
+  "name": "dsh-biblioteca-cue",
+  "version": "0.1.0",
+  "description": "In-turn cues from the biblioteca familiarity index: a dsh agent/pre-step hook",
+  "type": "module",
+  "main": "lib/index.js",
+  "files": [
+    "lib/index.js",
+    "lib/cue.js",
+    "cordis.patch.yml"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-llm": "*"
+  },
+  "engines": {
+    "node": ">=22.13",
+    "dsh": ">=0.2.2-rc.5 <0.3.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-llm": "file:test/stub-dsh-llm"
+  }
+}
