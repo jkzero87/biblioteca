@@ -837,6 +837,12 @@ def dispatch(method, params, db, cache):
             "protocolVersion": version,
             "capabilities": {"tools": {}},
             "serverInfo": {"name": "biblioteca", "version": SERVER_VERSION},
+            "instructions": (
+                "Persistent memory of past sessions. Call library_search(query) "
+                "when the user's request mentions a project, tool, path or problem "
+                "that may have come up before; call library_open(id) to read a card. "
+                "Use the library tools, not MCP resources: this server exposes no resources."
+            ),
         }
     if method == "ping":
         return {}
