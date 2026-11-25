@@ -191,8 +191,10 @@ class Db:
 # ---------------------------------------------------------------- search
 
 def library_search(db, query, project):
-    """Same two-level logic as src/search.py main(); records access only for
-    the returned [card] hits (the server is the --touch consumer)."""
+    """Same two-level logic as src/search.py (delegated to search.run_search):
+    AND first, falling back to any word (OR) when AND finds nothing, with the
+    mode reported in the trailer; records access only for the returned
+    [card] hits (the server is the --touch consumer)."""
     # Phase 5: the index is fresh when the search runs; a refresh failure
     # must never fail the search (log it and search the stale index).
     try:
@@ -204,107 +206,16 @@ def library_search(db, query, project):
         return tool_error("empty query")
     t0 = time.monotonic()
     con = db.con()
-    q = search.fts_query(" ".join(words))
-    terms = [w.lower() for w in words]
+    q_and = search.fts_query(" ".join(words))
+    q_or = search.fts_query(" ".join(words), or_mode=True)
     now = datetime.datetime.now(datetime.timezone.utc)
-    lines = []
-    seen = set()
-    card_hits = []
-    starts = {}
-    projs = [r[0] for r in con.execute("SELECT DISTINCT project FROM cards")]
-
-    def start_of(sid):
-        if sid not in starts:
-            row = con.execute(
-                "SELECT start FROM cards WHERE id = ?", (sid,)
-            ).fetchone()
-            starts[sid] = (row[0] if row else "") or ""
-        return starts[sid]
-
-    def ranked_rows(table):
-        w, params = search.match_where(table, q, projs, project)
-        rows = con.execute(w, params).fetchall()
-        scored = []
-        for rowid, sid, rank in rows:
-            if sid in seen:
-                continue
-            f = search.factors(con, sid, rank, now, terms)
-            scored.append((rowid, sid, *f))
-        scored.sort(key=lambda r: (-r[6], r[0]))
-        return scored[:search.MAX_CANDIDATES]
-
-    # Level 1: cards_fts (recollection)
-    for rowid, sid, bm25, recency, session_sal, local_sal, score, smap in ranked_rows("cards_fts"):
-        if len(lines) >= search.MAX_LINES:
-            break
-        seen.add(sid)
-        tags = []
-        snip = ""
-        for name, colidx, smap_key in search.CARD_FIELDS:
-            hit = con.execute(
-                "SELECT 1 FROM cards_fts WHERE %s MATCH ? AND rowid = ?" % name,
-                (q, rowid),
-            ).fetchone()
-            if hit:
-                tags.append("%s:%s" % (name, smap.get(smap_key, "observed")))
-                if not snip:
-                    snip = search.snippet_of(con, "cards_fts", colidx, rowid, q)
-        lines.append(
-            "[card] %s  %s  matched=%s  bm25=%.2f recency=%.3f salience=%.1f "
-            "session_sal=%.1f score=%.3f  %s"
-            % (sid, start_of(sid), ",".join(tags), bm25, recency, local_sal,
-               session_sal, score, snip)
-        )
-        card_hits.append(sid)
-
-    # Level 2: familiar_fts (familiarity), skipping already-returned sessions.
-    tmp_con = sqlite3.connect(":memory:")
-    tmp_con.execute("CREATE VIRTUAL TABLE tmp_terms USING fts5(term)")
-
-    def match_classes(sid):
-        row = con.execute(
-            "SELECT familiar_terms, familiar_classes FROM cards WHERE id = ?",
-            (sid,),
-        ).fetchone()
-        if not row:
-            return []
-        fts_terms = json.loads(row[0] or "[]")
-        cls_of = dict(zip(fts_terms, json.loads(row[1] or "[]")))
-        tmp_con.execute("DELETE FROM tmp_terms")
-        for t in fts_terms:
-            tmp_con.execute("INSERT INTO tmp_terms VALUES (?)", (t,))
-        out = []
-        for w in words:
-            phrase = '"%s"' % w.replace('"', '""')
-            for (t,) in tmp_con.execute(
-                "SELECT term FROM tmp_terms WHERE tmp_terms MATCH ?", (phrase,)
-            ):
-                out.append(cls_of[t])
-        return out
-
-    fam = []
-    searched = []
-    for rowid, sid, bm25, recency, session_sal, local_sal, score, smap in ranked_rows("familiar_fts"):
-        cls = match_classes(sid)
-        is_searched = bool(cls) and all(c == "retrieval" for c in cls)
-        label = "searched" if is_searched else "familiar"
-        tag = "familiar_terms:%s" % smap.get("familiar_terms", "observed")
-        snip = search.snippet_of(con, "familiar_fts", 1, rowid, q)
-        line = (
-            "[%s] %s  %s  matched=%s  bm25=%.2f recency=%.3f salience=%.1f "
-            "session_sal=%.1f score=%.3f  %s"
-            % (label, sid, start_of(sid), tag, bm25, recency, local_sal,
-               session_sal, score, snip)
-        )
-        if is_searched:
-            searched.append((sid, line))
-        else:
-            fam.append((sid, line))
-    tmp_con.close()
-
-    for sid, line in (fam + searched)[:search.MAX_LINES - len(lines)]:
-        lines.append(line)
-        seen.add(sid)
+    lines, _seen, card_hits = search.run_search(con, words, q_and, project, now)
+    mode = "and"
+    if not lines and len(words) > 1:
+        # AND matched nothing: retry with any word (OR), ranked by relevance
+        lines, _seen, card_hits = search.run_search(con, words, q_or, project, now)
+        if lines:
+            mode = "or"
 
     # access recorded only for returned [card] hits (same as --touch)
     if card_hits:
@@ -316,12 +227,13 @@ def library_search(db, query, project):
             )
         con.commit()
 
+    n_results = len(lines)
     if not lines:
         lines = ["(no results)"]
     ms = (time.monotonic() - t0) * 1000
-    trailer = "[%d results, %d bytes, %.1f ms, project: %s]" % (
-        len(lines), sum(len(l.encode("utf-8")) for l in lines) + len(lines) - 1,
-        ms, project or "-",
+    trailer = "[%d results, %d bytes, %.1f ms, project: %s, mode: %s]" % (
+        n_results, sum(len(l.encode("utf-8")) for l in lines) + len(lines) - 1,
+        ms, project or "-", mode,
     )
     text = "\n".join(lines) + "\n" + trailer
     if len(text) > SEARCH_CHAR_CAP:
