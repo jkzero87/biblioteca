@@ -86,7 +86,7 @@ def parse_iso(s):
     )
 
 
-def snippet_of(con, table, colidx, rowid, q):
+def snippet_of(con, table, colidx, rowid, q, chars=SNIPPET_CHARS):
     # snippet() is an FTS auxiliary: it needs a MATCH in the same statement.
     row = con.execute(
         f"SELECT snippet({table}, {colidx}, '', '', '', {SNIPPET_TOKENS}) "
@@ -96,7 +96,7 @@ def snippet_of(con, table, colidx, rowid, q):
     if not row or row[0] is None:
         return ""
     s = row[0].replace("\n", " ")
-    return s[:SNIPPET_CHARS]
+    return s[:chars]
 
 
 def factors(con, sid, rank, now, terms):
@@ -163,13 +163,16 @@ def match_where(table, q, projs, project):
     return w, params
 
 
-def run_search(con, words, q, project, now):
+def run_search(con, words, q, project, now, max_lines=MAX_LINES,
+               snippet_chars=SNIPPET_CHARS):
     """Run the two-level ranked search with the FTS5 query `q`.
 
     Level 1 searches cards_fts (recollection), level 2 searches familiar_fts
-    (familiarity) for sessions level 1 did not return. Returns
-    (lines, seen, card_hits): the result lines (up to MAX_LINES, possibly
-    empty), every session id returned, and the ids returned at level 1.
+    (familiarity) for sessions level 1 did not return. `max_lines` caps the
+    total lines returned (MAX_LINES by default, None = no cap). Snippets are
+    clipped to `snippet_chars`. Returns (lines, seen, card_hits): the result
+    lines (up to max_lines, possibly empty), every session id returned, and
+    the ids returned at level 1.
     """
     lines = []
     seen = set()
@@ -197,7 +200,7 @@ def run_search(con, words, q, project, now):
 
     # Level 1: cards_fts (recollection)
     for rowid, sid, bm25, recency, session_sal, local_sal, score, smap in ranked_rows("cards_fts", q, project):
-        if len(lines) >= MAX_LINES:
+        if max_lines is not None and len(lines) >= max_lines:
             break
         seen.add(sid)
         card_hits.append(sid)
@@ -210,7 +213,8 @@ def run_search(con, words, q, project, now):
             if hit:
                 tags.append(f"{name}:{smap.get(smap_key, 'observed')}")
                 if not snip:
-                    snip = snippet_of(con, "cards_fts", colidx, rowid, q)
+                    snip = snippet_of(con, "cards_fts", colidx, rowid, q,
+                                     snippet_chars)
         lines.append(
             f"[card] {sid}  {start_of(sid)}  matched={','.join(tags)}  "
             f"bm25={bm25:.2f} recency={recency:.3f} salience={local_sal:.1f} "
@@ -254,7 +258,7 @@ def run_search(con, words, q, project, now):
         is_searched = bool(cls) and all(c == "retrieval" for c in cls)
         label = "searched" if is_searched else "familiar"
         tag = f"familiar_terms:{smap.get('familiar_terms', 'observed')}"
-        snip = snippet_of(con, "familiar_fts", 1, rowid, q)
+        snip = snippet_of(con, "familiar_fts", 1, rowid, q, snippet_chars)
         line = (
             f"[{label}] {sid}  {start_of(sid)}  matched={tag}  "
             f"bm25={bm25:.2f} recency={recency:.3f} salience={local_sal:.1f} "
@@ -265,8 +269,11 @@ def run_search(con, words, q, project, now):
         else:
             fam.append((sid, line))
     # [familiar] first, then [searched]: order [card] > [familiar] >
-    # [searched]; nothing is dropped, the 5-line cap still applies.
-    for sid, line in (fam + searched)[:MAX_LINES - len(lines)]:
+    # [searched]; nothing is dropped beyond max_lines.
+    rest = fam + searched
+    if max_lines is not None:
+        rest = rest[:max_lines - len(lines)]
+    for sid, line in rest:
         lines.append(line)
         seen.add(sid)
     tmp_con.close()

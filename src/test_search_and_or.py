@@ -11,11 +11,17 @@ none), and the mode (and/or) is reported.
 Hermetic: builds a throwaway fixture DB in a temp directory; never
 touches data/library.db.
 
+Also covers the search presentation (phase 5 step 5): every card is
+shown in full (complete header line + text fragment capped at
+SEARCH_SNIPPET_CHARS), at most SEARCH_MAX_CARDS cards, trailer always
+whole and naming how many cards were left out.
+
 Run: python3 src/test_search_and_or.py
 """
 import datetime
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -32,15 +38,32 @@ B_ID = "session-c55a8bfe-9d2e-4a83-9ed5-08456d65ba42"
 C_ID = "session-f35a924d-62f7-470e-92e9-72a5f0e2154d"
 
 
-def build_db(path):
+FIXTURES = [
+    (A_ID, "2026-11-24T21:19:09", "2026-11-24T22:30:00",
+     "Consolidate single database in Docker API",
+     ["docker-compose.yml"], ["docker exec -i de_postgres psql -U deuser dedb"],
+     ["de_postgres", "docker", "psql", "5432"], 1),
+    (B_ID, "2026-11-24T19:57:01", "2026-11-24T20:30:00",
+     "SOLO la de .env (de_postgres, puerto 5432); no uses el Postgres del puerto 5433.",
+     [], [], [], 0),
+    (C_ID, "2026-11-24T01:31:23", "2026-11-24T02:00:00",
+     "SOLO la de .env (de_postgres, puerto 5432). Solo LEE de bronze y silver; escribe",
+     [], [], [], 0),
+]
+
+
+def build_db(path, fixtures=None):
     """Fixture DB shaped like the real schema (cards + both FTS tables).
 
-    A has 4 of the 5 query words (single, database, compose, de_postgres)
-    but NOT jira-rag; B and C have de_postgres only. So:
+    Default fixtures: A has 4 of the 5 query words (single, database,
+    compose, de_postgres) but NOT jira-rag; B and C have de_postgres only.
+    So:
       AND REAL_QUERY  -> nothing
       OR  REAL_QUERY  -> A, B, C
       AND "de_postgres compose" -> A only (OR would give A, B, C)
     """
+    if fixtures is None:
+        fixtures = FIXTURES
     con = sqlite3.connect(path)
     con.executescript("""
     CREATE TABLE cards (
@@ -54,18 +77,6 @@ def build_db(path):
     CREATE VIRTUAL TABLE familiar_fts USING fts5(
         id, terms_text, tokenize='unicode61');
     """)
-    fixtures = [
-        (A_ID, "2026-11-24T21:19:09", "2026-11-24T22:30:00",
-         "Consolidate single database in Docker API",
-         ["docker-compose.yml"], ["docker exec -i de_postgres psql -U deuser dedb"],
-         ["de_postgres", "docker", "psql", "5432"], 1),
-        (B_ID, "2026-11-24T19:57:01", "2026-11-24T20:30:00",
-         "SOLO la de .env (de_postgres, puerto 5432); no uses el Postgres del puerto 5433.",
-         [], [], [], 0),
-        (C_ID, "2026-11-24T01:31:23", "2026-11-24T02:00:00",
-         "SOLO la de .env (de_postgres, puerto 5432). Solo LEE de bronze y silver; escribe",
-         [], [], [], 0),
-    ]
     for sid, start, end, first, files, commands, terms, n_writes in fixtures:
         con.execute(
             "INSERT INTO cards (id, source, start, end, cwd, first_message, files,"
@@ -94,6 +105,26 @@ def build_db(path):
         con.execute("INSERT INTO familiar_fts VALUES (?,?)", (sid, " ".join(terms)))
     con.commit()
     con.close()
+
+
+def build_db_many(path, n=9):
+    """n sessions, all matching the OR fallback of REAL_QUERY (each first
+    message contains de_postgres), so OR REAL_QUERY returns n results."""
+    fixtures = [
+        ("session-many-%04d" % i,
+         "2026-11-24T%02d:00:00" % (i % 24),
+         "2026-11-24T%02d:30:00" % ((i % 24) + 1),
+         "Tarea %d de de_postgres: revisar el puerto 5432." % i,
+         [], [], [], 0)
+        for i in range(n)
+    ]
+    build_db(path, fixtures)
+
+
+HEADER_RE = re.compile(
+    r"^\[(?:card|familiar|searched)\] session-\S+  "
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}  matched="
+    r".*score=-?\d+\.\d{3}")
 
 
 def ids_of(lines):
@@ -152,8 +183,29 @@ def test_run_search_direct():
     assert card_hits == [A_ID], card_hits
 
 
+def check_cards(body, n_expected, trailer, n_results):
+    """body = exactly n_expected card lines, each with its complete header
+    line (label, session, date, matched, scores) and a text fragment of at
+    most SEARCH_SNIPPET_CHARS; trailer whole, counting n_results."""
+    sys.path.insert(0, SRC)
+    import library_server
+    assert len(body) == n_expected, body
+    assert len(ids_of(body)) == n_expected, body
+    assert all(l.startswith("[card] ") for l in body), body
+    for l in body:
+        assert HEADER_RE.match(l), l
+        assert "[truncated" not in l, l
+        header, snip = library_server._split_card(l)
+        assert len(snip) <= library_server.SEARCH_SNIPPET_CHARS, l
+    assert trailer.startswith("[%d results" % n_results), trailer
+    assert "mode: or" in trailer, trailer
+    assert "[truncated" not in trailer, trailer
+
+
 def test_server():
-    """MCP path: fallback + mode in trailer; access only on [card] hits."""
+    """MCP path: fallback + mode in trailer; 2+ cards are ALL shown with
+    their complete header lines and the trailer stays whole; access only
+    on [card] hits."""
     sys.path.insert(0, SRC)
     import library_server
     library_server.refresh = types.SimpleNamespace(refresh=lambda p: None)
@@ -163,14 +215,8 @@ def test_server():
         lines = text.rstrip("\n").split("\n")
         trailer = lines[-1]
         body = lines[:-1]
-        # fixture lines are long, so the 570-char cap truncates the body;
-        # the trailer (possibly wrapped in "[truncated at ...]") must still
-        # report the real count and mode.
-        assert "(no results)" not in body, text
-        assert body and ids_of(body) <= {A_ID, B_ID, C_ID}, text
-        assert all(l.startswith("[card] ") for l in body), text
-        assert "[3 results" in trailer, trailer
-        assert "mode: or" in trailer, trailer
+        # 3 matches -> all 3 cards shown in full; nothing is cut.
+        check_cards(body, 3, trailer, 3)
 
         con = sqlite3.connect(os.environ["_TEST_DB"])
         for sid in (A_ID, B_ID, C_ID):  # [card] hits: access recorded
@@ -189,12 +235,32 @@ def test_server():
         db.close()
 
 
+def test_server_max_cards():
+    """>8 results: exactly SEARCH_MAX_CARDS cards shown, headers complete,
+    trailer whole and naming how many cards were left out."""
+    sys.path.insert(0, SRC)
+    import library_server
+    library_server.refresh = types.SimpleNamespace(refresh=lambda p: None)
+    dbpath = os.path.join(tempfile.mkdtemp(prefix="libtest-many-"), "library.db")
+    build_db_many(dbpath)  # 9 OR matches for REAL_QUERY
+    db = library_server.Db(dbpath)
+    try:
+        text = library_server.library_search(db, REAL_QUERY, None)["content"][0]["text"]
+        lines = text.rstrip("\n").split("\n")
+        trailer = lines[-1]
+        body = lines[:-1]
+        check_cards(body, library_server.SEARCH_MAX_CARDS, trailer, 9)
+        assert "(1 card not shown)" in trailer, trailer
+    finally:
+        db.close()
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="libtest-")
     os.environ["_TEST_DB"] = os.path.join(tmp, "library.db")
     build_db(os.environ["_TEST_DB"])
     tests = [test_cli_fallback, test_cli_and_first, test_cli_no_match,
-             test_run_search_direct, test_server]
+             test_run_search_direct, test_server, test_server_max_cards]
     for t in tests:
         t()
         print("PASS %s" % t.__name__)
