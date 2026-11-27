@@ -8,7 +8,7 @@ FTS5 index, and exposes two MCP tools — `library_search` and `library_open` �
 agent calls when it needs to remember what it did before. The episode layer is
 deliberately mechanical: no model writes to it, nothing is auto-injected into the
 prompt, and the original logs are never modified
-([`docs/design.md:32`](docs/design.md), [`docs/decisions.md:13`](docs/decisions.md)).
+([`docs/design.md:92`](docs/design.md), [`docs/decisions.md:13`](docs/decisions.md)).
 
 ## What it is
 
@@ -22,9 +22,12 @@ prompt, and the original logs are never modified
   commands) and `familiar_fts` (familiarity: lossless, uncapped list of every file path
   and bash command per session).
   ([`src/build_index.py:9-12`](src/build_index.py), [`docs/decisions.md:38-39`](docs/decisions.md))
-- **Two-step retrieval** — `library_search` returns ≤5 one-line results with a size
-  footer; `library_open` returns an outline first, then the requested window.
-  ([`src/library_server.py:101-129`](src/library_server.py), [`docs/design.md:94-98`](docs/design.md))
+- **Two-step retrieval** — `library_search` returns at most 8 cards, each keeping
+  its full header (label, session, date, matched fields, all scores) plus a text
+  fragment of up to 300 chars; the trailer is always emitted whole and names any
+  cards not shown. `library_open` returns an outline first, then the requested
+  window.
+  ([`src/library_server.py:44-52,101-129,273-282`](src/library_server.py))
 - **Self-refresh** — the server re-extracts only the logs whose size/mtime changed, at
   startup and before every search, cutting each log at its last completed turn, so a
   session never finds itself.
@@ -79,9 +82,9 @@ exists for its first two steps — see Status below)
 - **Search.** Each query word is quoted as an FTS5 phrase; AND first, OR fallback if
   AND returns nothing, and the footer reports which mode ran. Ranking:
   `score = bm25 × recency × local salience` — recency `0.98^days`, salience
-  `1 + 0.2 × min(sum, 10)` — with every factor printed in the footer
-  (`[N results, X bytes, Y ms, query: …, mode=and|or]`).
-  ([`src/search.py:6-12,26-37,334`](src/search.py), [`docs/plan.md:39`](docs/plan.md))
+  `1 + 0.2 × min(sum, 10)` — with every factor printed with each result, and the
+  trailer line `[N results, X bytes, Y ms, query: …, mode=and|or]` last.
+  ([`src/search.py:6-12,26-40,334`](src/search.py), [`docs/plan.md:39`](docs/plan.md))
 - **Result labels.** `[card]` the session worked on it, `[familiar]` the session saw
   it, `[searched]` the session only searched for it — never evidence for it.
   ([`src/search.py:10-14`](src/search.py), [`reports/phase-2-cards.md:82`](reports/phase-2-cards.md),
@@ -91,7 +94,7 @@ exists for its first two steps — see Status below)
   Per-session read budget: 4000 estimated tokens in a 30-minute window; one excerpt is
   capped at 3350 chars (≤1500 tokens worst case); token estimates use a measured
   char/token ratio with a 2.5 fallback.
-  ([`src/library_server.py:37-41,53,67,82-89`](src/library_server.py))
+  ([`src/library_server.py:37-41,45,53,67,82-89`](src/library_server.py))
 - **Access bookkeeping.** `--touch` is the only writer (sets `access_count`,
   `last_accessed`); plain search is read-only and records nothing.
   ([`src/search.py:42-44`](src/search.py))
@@ -109,13 +112,13 @@ is what was actually measured, with its source line.
 |---|---|---|
 | dsh-recall auto-injection (baseline) | 0–0.245% of session chars; 0 explicit recall calls | [`reports/phase-1-recall-diagnostic.md:105`](reports/phase-1-recall-diagnostic.md) |
 | Cards / index (Phase 2) | 146 cards; 454,656 B db; 0.3–0.4 ms per query | [`reports/phase-2-cards.md:24-27`](reports/phase-2-cards.md) |
-| Index with bio fields (Phase 2b) | 454,656 → 1,273,856 B; 9/149 sessions with commits; 18 orphan cards | [`reports/phase-2b-bio-fields.md:3,76,87,101`](reports/phase-2b-bio-fields.md) |
+| Index with bio fields (Phase 2b) | 454,656 → 1,273,856 B; 9/149 sessions with commits; 18 orphan cards | [`reports/phase-2-cards.md:101`](reports/phase-2-cards.md), [`reports/phase-2b-bio-fields.md:76,87`](reports/phase-2b-bio-fields.md) |
 | Scene structure (measure) | 148 sessions; median 1 user message, p90 3; 99 single-message sessions = 48.2% of all chars | [`reports/phase-2-scene-measure.md:10,17,53-54`](reports/phase-2-scene-measure.md) |
 | Corpus → index size (Phase 3) | 153 zstd logs (17,005,039 B) → 1,433,600 B db | [`reports/phase-3-measure-ram.md:11-13`](reports/phase-3-measure-ram.md) |
 | Search latency (Phase 3, n=20) | disk median 0.8 ms (p95 22.2); in-RAM 0.7 ms; one new process 38.4 ms (interpreter start-up ≈31.7 ms) | [`reports/phase-3-measure-ram.md:71-73`](reports/phase-3-measure-ram.md) |
 | Loading the 1.4 MB db | 1.95 ms | [`reports/phase-3-measure-ram.md:73`](reports/phase-3-measure-ram.md) |
-| Opening a session | zstd decompress 10.5–30.7 ms vs flat ~17–19 ms for reading the pre-cut 64 KiB excerpt | [`reports/phase-3-measure-ram.md:98-99,118-119`](reports/phase-3-measure-ram.md) |
-| Live use (Phase 4) | Run 1: 4 calls / 3,028 tokens; Run 3: 16 / 15,658; Runs 5–6 (current code): 8 / 5,232 and 5 / 2,685; `tools/list` schema 307–320 tokens per request | [`reports/phase-4-live-use.md:21,56,111,211-212,216`](reports/phase-4-live-use.md) |
+| Opening a session | zstd decompress 10.5–30.7 ms vs flat ~17–19 ms for reading the pre-cut 64 KiB excerpt | [`reports/phase-3-measure-ram.md:117-119`](reports/phase-3-measure-ram.md) |
+| Live use (Phase 4) | Run 1: 4 calls / 3,028 tokens; Run 3: 16 / 15,658; Runs 5–6 (current code): 8 / 5,232 and 5 / 2,685; `tools/list` schema 307–320 tokens per request | [`reports/phase-4-live-use.md:21,111,211-212,216`](reports/phase-4-live-use.md) |
 | Refresh cost (Phase 5) | full rebuild 176 logs → 163 cards in 1,564.7 ms (13 skipped); no-change 33.9 ms; small change 118.6 ms; 1.2 MB log 219.0 ms | [`reports/phase-5-refresh.md:5,11-13`](reports/phase-5-refresh.md) |
 | Unprompted use (Phase 5) | 1 of 5 target sessions measured: searched unprompted (search was the first tool call), 3 calls, 1,503 tokens | [`reports/phase-5-sessions.md:2,6,11`](reports/phase-5-sessions.md) |
 
@@ -123,7 +126,7 @@ is what was actually measured, with its source line.
 
 Requirements: Python 3 (standard library only — no pip installs), SQLite with FTS5,
 session logs from the dsh sessions directory (default
-`~/.config/DeepSeek Harness/sessions`).
+`~/.local/share/deepseek-harness/sessions`; override with `--root`).
 
 ```bash
 # 1. Extract cards from the session logs (read-only)
@@ -138,7 +141,7 @@ python3 src/search.py <query words> [--project NAME] [--touch]
 # 4. Run the MCP server (stdio) — this is what dsh / Claude Code talk to
 python3 src/library_server.py
 ```
-([`src/extract.py:37,77`](src/extract.py), [`src/build_index.py:211-220`](src/build_index.py),
+([`src/extract.py:77,86`](src/extract.py), [`src/build_index.py:211-220`](src/build_index.py),
 [`src/search.py:4`](src/search.py), [`src/library_server.py:916`](src/library_server.py))
 
 Tests:
@@ -166,9 +169,10 @@ server modules into a temp tree and starts the server there; the real
   fixed in advance: 5 real resuming sessions, no prompting, measured from logs only;
   1 of 5 measured so far: searched unprompted, 3 calls, 1,503 tokens)
   ([`reports/phase-5-sessions.md:2,6`](reports/phase-5-sessions.md)).
-- **Open pull request:** #1 `feat/cue-hook` — "dsh-biblioteca-cue: in-turn cues from
-  the familiarity index" — the mechanical trigger of
-  [`docs/design.md:103`](docs/design.md); not yet merged.
+- **Cue hook (experimental):** [`plugin/dsh-biblioteca-cue/`](plugin/dsh-biblioteca-cue/README.md) —
+  in-turn cues from the familiarity index, the mechanical trigger of
+  [`docs/design.md:103`](docs/design.md). Merged into `main` (PR #1, commit
+  7f58ebe) but **not installed in the agent** yet.
 - **Known limitations** ([`docs/decisions.md`](docs/decisions.md)):
   - the per-session read budget is keyed by the opened session id, not by the agent
     session (one server process for all sessions) — [`docs/decisions.md:82`](docs/decisions.md);
@@ -179,7 +183,7 @@ server modules into a temp tree and starts the server there; the real
   - searching is not evidence: terms only seen in searches are labelled `[searched]`
     and never boost a card — [`docs/decisions.md:44-45`](docs/decisions.md);
   - end-gap: some sessions end in bookkeeping events the renderer skips
-    ([`reports/phase-4-live-use.md:80,113`](reports/phase-4-live-use.md)).
+    ([`reports/phase-4-live-use.md:70,76,113`](reports/phase-4-live-use.md)).
 - **Not built yet** — Phase 6 and Later, and only if Phase 5 shows the library is used
   ([`docs/plan.md:64-74`](docs/plan.md), [`docs/design.md:118`](docs/design.md)): the
   sleep job (knowledge layer, lessons tagged `model`, contradiction marking),
