@@ -7,6 +7,10 @@ Every query word is quoted as an FTS5 phrase, so dots and hyphens work
 (`compatibility.json`, `dsh-recall`, `load.py` -> phrases of adjacent
 tokens).
 
+The search runs as AND first (every word must match); if it returns
+nothing, it is re-run as OR (any word matches) with the same ranking, and
+the footer says which query returned the results (mode=and / mode=or).
+
 Three labels in fixed order — [card] > [familiar] > [searched] — max 5 lines:
   level 1 (recollection): cards_fts over first_message, files_touched,
                            bash_commands (retrieval commands never appear
@@ -65,9 +69,15 @@ CARD_FIELDS = (
 )
 
 
-def fts_query(text):
-    """Quote every word as an FTS5 phrase (doubles inner quotes)."""
-    return " ".join('"%s"' % w.replace('"', '""') for w in text.split() if w)
+def fts_query(text, or_mode=False):
+    """Quote every word as an FTS5 phrase (doubles inner quotes).
+
+    By default the phrases are AND-combined (every word must match);
+    with or_mode=True they are joined with OR (any word matches), so the
+    query can be used as a fallback when the AND form matches nothing.
+    """
+    joiner = " OR " if or_mode else " "
+    return joiner.join('"%s"' % w.replace('"', '""') for w in text.split() if w)
 
 
 def parse_iso(s):
@@ -76,7 +86,7 @@ def parse_iso(s):
     )
 
 
-def snippet_of(con, table, colidx, rowid, q):
+def snippet_of(con, table, colidx, rowid, q, chars=SNIPPET_CHARS):
     # snippet() is an FTS auxiliary: it needs a MATCH in the same statement.
     row = con.execute(
         f"SELECT snippet({table}, {colidx}, '', '', '', {SNIPPET_TOKENS}) "
@@ -86,7 +96,7 @@ def snippet_of(con, table, colidx, rowid, q):
     if not row or row[0] is None:
         return ""
     s = row[0].replace("\n", " ")
-    return s[:SNIPPET_CHARS]
+    return s[:chars]
 
 
 def factors(con, sid, rank, now, terms):
@@ -153,37 +163,23 @@ def match_where(table, q, projs, project):
     return w, params
 
 
-def main():
-    argv = sys.argv[1:]
-    project = None
-    touch = False
-    words = []
-    for a in argv:
-        if a.startswith("--project="):
-            project = a.split("=", 1)[1]
-        elif a == "--project":
-            sys.exit("--project needs a value: --project NAME")
-        elif a == "--touch":
-            touch = True
-        else:
-            words.append(a)
-    if not words:
-        sys.exit(__doc__)
-    db_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "library.db"
-    )
-    q = fts_query(" ".join(words))
-    terms = [w.lower() for w in " ".join(words).split() if w]
-    # default: read-only, no access recorded; --touch is the only writer
-    mode = "rw" if touch else "ro"
-    con = sqlite3.connect(f"file:{db_path}?mode={mode}", uri=True)
-    t0 = time.monotonic()
-    now = datetime.datetime.now(datetime.timezone.utc)
+def run_search(con, words, q, project, now, max_lines=MAX_LINES,
+               snippet_chars=SNIPPET_CHARS):
+    """Run the two-level ranked search with the FTS5 query `q`.
+
+    Level 1 searches cards_fts (recollection), level 2 searches familiar_fts
+    (familiarity) for sessions level 1 did not return. `max_lines` caps the
+    total lines returned (MAX_LINES by default, None = no cap). Snippets are
+    clipped to `snippet_chars`. Returns (lines, seen, card_hits): the result
+    lines (up to max_lines, possibly empty), every session id returned, and
+    the ids returned at level 1.
+    """
     lines = []
     seen = set()
+    card_hits = []
     starts = {}
+    terms = [w.lower() for w in words if w]
     projs = [r[0] for r in con.execute("SELECT DISTINCT project FROM cards")]
-
     def start_of(sid):
         if sid not in starts:
             row = con.execute("SELECT start FROM cards WHERE id = ?", (sid,)).fetchone()
@@ -204,9 +200,10 @@ def main():
 
     # Level 1: cards_fts (recollection)
     for rowid, sid, bm25, recency, session_sal, local_sal, score, smap in ranked_rows("cards_fts", q, project):
-        if len(lines) >= MAX_LINES:
+        if max_lines is not None and len(lines) >= max_lines:
             break
         seen.add(sid)
+        card_hits.append(sid)
         tags = []
         snip = ""
         for name, colidx, smap_key in CARD_FIELDS:
@@ -216,7 +213,8 @@ def main():
             if hit:
                 tags.append(f"{name}:{smap.get(smap_key, 'observed')}")
                 if not snip:
-                    snip = snippet_of(con, "cards_fts", colidx, rowid, q)
+                    snip = snippet_of(con, "cards_fts", colidx, rowid, q,
+                                     snippet_chars)
         lines.append(
             f"[card] {sid}  {start_of(sid)}  matched={','.join(tags)}  "
             f"bm25={bm25:.2f} recency={recency:.3f} salience={local_sal:.1f} "
@@ -260,7 +258,7 @@ def main():
         is_searched = bool(cls) and all(c == "retrieval" for c in cls)
         label = "searched" if is_searched else "familiar"
         tag = f"familiar_terms:{smap.get('familiar_terms', 'observed')}"
-        snip = snippet_of(con, "familiar_fts", 1, rowid, q)
+        snip = snippet_of(con, "familiar_fts", 1, rowid, q, snippet_chars)
         line = (
             f"[{label}] {sid}  {start_of(sid)}  matched={tag}  "
             f"bm25={bm25:.2f} recency={recency:.3f} salience={local_sal:.1f} "
@@ -271,11 +269,50 @@ def main():
         else:
             fam.append((sid, line))
     # [familiar] first, then [searched]: order [card] > [familiar] >
-    # [searched]; nothing is dropped, the 5-line cap still applies.
-    for sid, line in (fam + searched)[:MAX_LINES - len(lines)]:
+    # [searched]; nothing is dropped beyond max_lines.
+    rest = fam + searched
+    if max_lines is not None:
+        rest = rest[:max_lines - len(lines)]
+    for sid, line in rest:
         lines.append(line)
         seen.add(sid)
     tmp_con.close()
+    return lines, seen, card_hits
+
+
+def main():
+    argv = sys.argv[1:]
+    project = None
+    touch = False
+    words = []
+    for a in argv:
+        if a.startswith("--project="):
+            project = a.split("=", 1)[1]
+        elif a == "--project":
+            sys.exit("--project needs a value: --project NAME")
+        elif a == "--touch":
+            touch = True
+        else:
+            words.append(a)
+    if not words:
+        sys.exit(__doc__)
+    db_path = os.environ.get("LIBRARY_DB") or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "library.db"
+    )
+    q_and = fts_query(" ".join(words))
+    q_or = fts_query(" ".join(words), or_mode=True)
+    # default: read-only, no access recorded; --touch is the only writer
+    mode = "rw" if touch else "ro"
+    con = sqlite3.connect(f"file:{db_path}?mode={mode}", uri=True)
+    t0 = time.monotonic()
+    now = datetime.datetime.now(datetime.timezone.utc)
+    q_used, (lines, seen, _card_hits) = q_and, run_search(con, words, q_and, project, now)
+    search_mode = "and"
+    if not lines and len(words) > 1:
+        # AND matched nothing: retry with any word (OR), ranked by relevance
+        lines, seen, _card_hits = run_search(con, words, q_or, project, now)
+        if lines:
+            q_used, search_mode = q_or, "or"
 
     ms = (time.monotonic() - t0) * 1000
     if touch and seen:
@@ -287,13 +324,14 @@ def main():
             )
         con.commit()
     con.close()
+    n = len(lines)
     if not lines:
         lines = ["(no results)"]
     text = "\n".join(lines) + "\n"
     sys.stdout.write(text)
     proj = f", project: {project}" if project else ""
     touch_note = ", touch" if touch else ""
-    print(f"[{len(lines)} results, {len(text.encode('utf-8'))} bytes, {ms:.1f} ms, query: {q}{proj}{touch_note}]")
+    print(f"[{n} results, {len(text.encode('utf-8'))} bytes, {ms:.1f} ms, query: {q_used}{proj}{touch_note}, mode={search_mode}]")
 
 
 if __name__ == "__main__":

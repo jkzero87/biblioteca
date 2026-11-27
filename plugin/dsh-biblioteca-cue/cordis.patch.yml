@@ -1,0 +1,11 @@
+# dsh-biblioteca-cue — in-turn cues from the biblioteca familiarity index (agent/pre-step, like dsh-recall)
+- insert:
+    - id: biblioteca-cue
+      name: dsh-biblioteca-cue
+      config:
+        dbPath: /home/jkzero/biblioteca/data/library.db
+        # IDF = ln(cards / df). With 190 cards, 5.0 admits only terms held by one card (ln 190 = 5.25).
+        # tools/dry_run.mjs over the 91 user messages of 2026-11-08..23: 4.0 -> 72 cues (0.79/message),
+        # 5.0 -> 66 cues (0.73/message); no threshold that still cues gets under 2 cues per 3 messages.
+        minIdf: 5.0
+        maxCuesPerTurn: 2
